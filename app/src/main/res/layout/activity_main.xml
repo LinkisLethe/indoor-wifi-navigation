@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    tools:context=".MainActivity">
+
+    <!-- 左侧楼层选择栏 -->
+    <LinearLayout
+        android:id="@+id/floor_selector"
+        android:layout_width="72dp"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#EEEEEE"
+        android:padding="4dp">
+
+        <Button
+            android:id="@+id/btn_floor3"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:text="3F" />
+
+        <Button
+            android:id="@+id/btn_floor4"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:text="4F" />
+
+        <Button
+            android:id="@+id/btn_floor5"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:text="5F" />
+    </LinearLayout>
+
+    <!-- 右侧显示楼层平面图 -->
+    <ImageView
+        android:id="@+id/img_floor"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:adjustViewBounds="true"
+        android:scaleType="fitCenter"
+        android:src="@drawable/floor3" />
+</LinearLayout>
