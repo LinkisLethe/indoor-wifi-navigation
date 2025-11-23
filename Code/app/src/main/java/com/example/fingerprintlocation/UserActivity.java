@@ -37,6 +37,9 @@ import java.util.Map;
 import java.util.Collections;
 import java.util.Comparator;
 
+import android.view.ViewGroup;
+
+
 /**
  * ================================================================
  *                  用户定位页面（定位 + 新闻占位）
@@ -52,6 +55,12 @@ public class UserActivity extends AppCompatActivity {
 
     private static final String TAG = "UserActivity";
     private static final int REQ_CODE_LOCATION = 2001;
+
+    // ===== 调试开关：true 时完全绕过 WiFi 扫描 =====
+    // TODO: 等wifi扫描可以用的时候把DEBUG_BYPASS_WIFI改成false
+    private static final boolean DEBUG_BYPASS_WIFI = true;
+    // 调试时要强制显示的房间
+    private static final String DEBUG_FAKE_ROOM = "405";
 
     // ===== 与 AdminActivity 保持一致的参数 =====
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
@@ -85,6 +94,11 @@ public class UserActivity extends AppCompatActivity {
     private ArrayList<FingerprintRecord> fingerprintLibrary = new ArrayList<>();
 
     private ImageView imgFloor;
+    private ImageView imgUserLoc;
+    // 房间 -> 在平面图中的相对坐标（0~1）
+    private Map<String, RoomPos> roomPosMap = new HashMap<>();
+    private int currentFloor = -1;
+
 
     // 接收 WiFi 扫描结果的广播
     private final BroadcastReceiver wifiScanReceiver = new BroadcastReceiver() {
@@ -189,6 +203,28 @@ public class UserActivity extends AppCompatActivity {
         btnRefreshNews = findViewById(R.id.btnRefreshNews);
         imgFloor = findViewById(R.id.img_floor);
 
+        // 新建一个覆盖在平面图上的位置图标
+        imgUserLoc = new ImageView(this);
+        imgUserLoc.setImageResource(R.drawable.ic_locate);
+
+        // 设置等比例缩放 + 固定大小（例如 24dp）
+        int size = (int) (17 * getResources().getDisplayMetrics().density);
+
+        ViewGroup.LayoutParams params =
+                new ViewGroup.LayoutParams(size, size);
+
+        imgUserLoc.setLayoutParams(params);
+        imgUserLoc.setAdjustViewBounds(true);
+        imgUserLoc.setVisibility(View.GONE); // 默认不显示
+
+        // 把图标加到根布局上（会盖在 imgFloor 上面）
+        ViewGroup root = (ViewGroup) ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
+        root.addView(imgUserLoc, params);
+
+
+        // 初始化每个房间在平面图上的相对坐标
+        initRoomPositions();
+
         Button btn3 = findViewById(R.id.btn_floor3);
         Button btn4 = findViewById(R.id.btn_floor4);
         Button btn5 = findViewById(R.id.btn_floor5);
@@ -196,11 +232,14 @@ public class UserActivity extends AppCompatActivity {
         View.OnClickListener floorClickListener = v -> {
             int id = v.getId();
             if (id == R.id.btn_floor3) {
-                imgFloor.setImageResource(R.drawable.floor3);   // 换成你 3F 的图
+                imgFloor.setImageResource(R.drawable.floor3);
+                currentFloor = 3;
             } else if (id == R.id.btn_floor4) {
-                imgFloor.setImageResource(R.drawable.floor4);   // 换成你 4F 的图
+                imgFloor.setImageResource(R.drawable.floor4);
+                currentFloor = 4;
             } else if (id == R.id.btn_floor5) {
-                imgFloor.setImageResource(R.drawable.floor5);   // 换成你 5F 的图
+                imgFloor.setImageResource(R.drawable.floor5);
+                currentFloor = 5;
             }
         };
 
@@ -254,15 +293,26 @@ public class UserActivity extends AppCompatActivity {
             return;
         }
 
+        tvResult.setText("");
+
+        // ===== 调试模式：完全跳过 WiFi 扫描，只看房间 + 图标是否对得上 =====
+        if (DEBUG_BYPASS_WIFI) {
+            String room = DEBUG_FAKE_ROOM;
+            tvResult.append("[DEBUG] Bypass WiFi scanning. Force show room " + room + ".\n");
+            showUserOnRoom(room);
+            return;
+        }
+
+        // ===== 正常模式：走真实扫描流程 =====
         isLocating = true;
         currentLocateScanCount = 0;
         locateSamples.clear();
 
-        tvResult.setText("");
         tvResult.append("Start locating...\n");
 
         checkPermissionAndScan();
     }
+
 
     @Override
     protected void onDestroy() {
@@ -528,6 +578,8 @@ public class UserActivity extends AppCompatActivity {
         tvResult.append("Best RP label weight: " + String.format("%.4f", bestScore)
                 + " (" + bestLabel + ")\n\n");
 
+        showUserOnRoom(bestRoom);
+
         tvResult.append("Top " + K + " neighbors (RP-level):\n");
         for (int i = 0; i < K; i++) {
             Neighbor n = neighbors.get(i);
@@ -539,6 +591,111 @@ public class UserActivity extends AppCompatActivity {
     }
 
     // ======= 辅助数据结构 =======
+
+    // 房间在平面图中的相对位置（0~1）
+    private static class RoomPos {
+        final float xRatio;
+        final float yRatio;
+
+        RoomPos(float xRatio, float yRatio) {
+            this.xRatio = xRatio;
+            this.yRatio = yRatio;
+        }
+    }
+
+    // 初始化每个房间的坐标
+    private void initRoomPositions() {
+        roomPosMap.clear();
+
+        // 在图片上的相对位置（0 左 / 上，1 右 / 下）
+        roomPosMap.put("301", new RoomPos(0.25f, 1.1f));
+        roomPosMap.put("302", new RoomPos(0.22f, 0.70f));
+        roomPosMap.put("303", new RoomPos(0.19f, 0.50f));
+        roomPosMap.put("304", new RoomPos(0.50f, 1.0f));
+        roomPosMap.put("305", new RoomPos(0.63f, 0.97f));
+        roomPosMap.put("306", new RoomPos(0.80f, 0.37f));
+
+        roomPosMap.put("401", new RoomPos(0.25f, 1.1f));
+        roomPosMap.put("402", new RoomPos(0.33f, 1.05f));
+        roomPosMap.put("403", new RoomPos(0.47f, 1.0f));
+        roomPosMap.put("404", new RoomPos(0.54f, 1.0f));
+        roomPosMap.put("405", new RoomPos(0.59f, 0.97f));
+        roomPosMap.put("406", new RoomPos(0.65f, 0.94f));
+        roomPosMap.put("407", new RoomPos(0.90f, 0.80f));
+
+        roomPosMap.put("501", new RoomPos(0.25f, 1.1f));
+        roomPosMap.put("502", new RoomPos(0.33f, 1.05f));
+        roomPosMap.put("503", new RoomPos(0.54f, 1.0f));
+        roomPosMap.put("504", new RoomPos(0.65f, 0.94f));
+        roomPosMap.put("505", new RoomPos(0.90f, 0.80f));
+    }
+
+    // 根据房间名，把 ic_locate 图标移动到对应位置
+    private void showUserOnRoom(String roomName) {
+        if (imgFloor == null || imgUserLoc == null) return;
+
+        autoSwitchFloorByRoom(roomName);
+
+        RoomPos pos = roomPosMap.get(roomName);
+        if (pos == null) {
+            tvResult.append("No position configured for room " + roomName + ".\n");
+            imgUserLoc.setVisibility(View.GONE);
+            return;
+        }
+
+        // 确保 imgFloor 已经完成布局
+        imgFloor.post(() -> {
+            int w = imgFloor.getWidth();
+            int h = imgFloor.getHeight();
+            if (w == 0 || h == 0) {
+                tvResult.append("Floor image size is zero. Cannot place icon.\n");
+                return;
+            }
+
+            float x = imgFloor.getX() + pos.xRatio * w;
+            float y = imgFloor.getY() + pos.yRatio * h;
+
+            imgUserLoc.setX(x);
+            imgUserLoc.setY(y);
+            imgUserLoc.setVisibility(View.VISIBLE);
+        });
+    }
+
+    // 根据房间号自动切换楼层图：
+    private void autoSwitchFloorByRoom(String roomName) {
+        if (roomName == null || roomName.length() == 0) return;
+
+        int floor;
+        try {
+            // 比如 301 -> 3, 403 -> 4
+            int roomNum = Integer.parseInt(roomName);
+            floor = roomNum / 100;
+        } catch (NumberFormatException e) {
+            // 房间名不是纯数字就算了
+            return;
+        }
+
+        // 和当前一样就不重复切
+        if (floor == currentFloor) return;
+
+        switch (floor) {
+            case 3:
+                imgFloor.setImageResource(R.drawable.floor3);
+                break;
+            case 4:
+                imgFloor.setImageResource(R.drawable.floor4);
+                break;
+            case 5:
+                imgFloor.setImageResource(R.drawable.floor5);
+                break;
+            default:
+                // 其他楼层你暂时不处理就直接返回
+                return;
+        }
+
+        currentFloor = floor;
+    }
+
 
     private static class Neighbor {
         FingerprintRecord record;
