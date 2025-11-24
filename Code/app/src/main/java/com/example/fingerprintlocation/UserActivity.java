@@ -57,8 +57,8 @@ public class UserActivity extends AppCompatActivity {
     private static final int REQ_CODE_LOCATION = 2001;
 
     // ===== 调试开关：true 时完全绕过 WiFi 扫描 =====
-    // TODO: 等wifi扫描可以用的时候把DEBUG_BYPASS_WIFI改成false
-    private static final boolean DEBUG_BYPASS_WIFI = true;
+    // 等wifi扫描可以用了，DEBUG_BYPASS_WIFI应为false
+    private static final boolean DEBUG_BYPASS_WIFI = false;
     // 调试时要强制显示的房间
     private static final String DEBUG_FAKE_ROOM = "405";
 
@@ -66,7 +66,7 @@ public class UserActivity extends AppCompatActivity {
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
     private static final int MIN_RSSI_DBM = -85;         // 弱信号过滤阈值
     private static final double MISSING_RSSI = -100.0;   // 缺失 AP 的默认 RSSI
-    private static final double DISTANCE_THRESHOLD = 70.0;
+    private static final double DISTANCE_THRESHOLD = 200.0;
     private static final int K_NEIGHBORS = 3;
     private static final int MIN_AP_MATCH_REQUIRED = 6;  // 最少 AP 数量阈值
     private static final String FP_DB_FILE = "fingerprint_db.json";
@@ -522,6 +522,7 @@ public class UserActivity extends AppCompatActivity {
                     + ", RP: " + best.record.rp
                     + "  distance = " + String.format("%.2f", best.distance)
                     + ", cos = " + String.format("%.3f", best.cosineSim) + "\n");
+            showUserOnRoom(best.record.room);
             return;
         }
 
