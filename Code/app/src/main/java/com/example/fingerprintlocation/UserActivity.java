@@ -100,8 +100,6 @@ public class UserActivity extends AppCompatActivity {
     // 房间 -> 在平面图中的相对坐标（0~1）
     private Map<String, RoomPos> roomPosMap = new HashMap<>();
     private int currentFloor = -1;
-    private String lastLocatedRoom = null;
-    private int iconFloor = -1;
 
     // 接收 WiFi 扫描结果的广播
     private final BroadcastReceiver wifiScanReceiver = new BroadcastReceiver() {
@@ -624,7 +622,6 @@ public class UserActivity extends AppCompatActivity {
         roomPosMap.clear();
 
         // 在图片上的相对位置（0 左 / 上，1 右 / 下）
-        // TODO：调数值
         roomPosMap.put("301", new RoomPos(0.25f, 0.8f));
         roomPosMap.put("302", new RoomPos(0.12f, 0.40f));
         roomPosMap.put("303", new RoomPos(0.12f, 0.20f));
