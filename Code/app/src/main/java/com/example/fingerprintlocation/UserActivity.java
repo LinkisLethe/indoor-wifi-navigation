@@ -59,9 +59,9 @@ public class UserActivity extends AppCompatActivity {
 
     // ===== 调试开关：true 时完全绕过 WiFi 扫描 =====
     // 等wifi扫描可以用了，DEBUG_BYPASS_WIFI应为false
-    private static final boolean DEBUG_BYPASS_WIFI = true;
+    private static final boolean DEBUG_BYPASS_WIFI = false;
     // 调试时要强制显示的房间
-    private static final String DEBUG_FAKE_ROOM = "504";
+    private static final String DEBUG_FAKE_ROOM = "406";
 
     // ===== 与 AdminActivity 保持一致的参数 =====
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
@@ -97,6 +97,8 @@ public class UserActivity extends AppCompatActivity {
     private ImageView imgFloor;
     private ImageView imgUserLoc;
     private RoomPos currentRoomPos = null;
+    private String lastLocatedRoom = null;  // 最近一次定位到的房间号，比如 "406"
+    private int iconFloor = -1;            // 图标所在楼层，比如 4
     // 房间 -> 在平面图中的相对坐标（0~1）
     private Map<String, RoomPos> roomPosMap = new HashMap<>();
     private int currentFloor = -1;
@@ -253,6 +255,13 @@ public class UserActivity extends AppCompatActivity {
             } else if (id == R.id.btn_floor5) {
                 imgFloor.setImageResource(R.drawable.floor5);
                 currentFloor = 5;
+            }
+            // 手动切楼层后，根据楼层决定是否显示图标
+            if (lastLocatedRoom != null && currentRoomPos != null) {
+                // 这里不用 showUserOnRoom，避免又触发 autoSwitchFloorByRoom 把楼层改回来
+                updateUserIconPosition();  // 里面已经有楼层判断，不同楼层会直接隐藏
+            } else if (imgUserLoc != null) {
+                imgUserLoc.setVisibility(View.GONE);
             }
         };
 
@@ -662,11 +671,28 @@ public class UserActivity extends AppCompatActivity {
         // 记录当前房间坐标，滚动时还要用
         currentRoomPos = pos;
 
+        lastLocatedRoom = roomName;
+        int floor = -1;
+        try {
+            int roomNum = Integer.parseInt(roomName); // 406 -> 4
+            floor = roomNum / 100;
+        } catch (NumberFormatException e) {
+            // 房间名不是纯数字就算未知楼层，floor 保持 -1
+        }
+        iconFloor = floor;
+
         // 直接调用统一的更新函数（里面会 post，保证在布局之后执行）
         updateUserIconPosition();
     }
 
     private void updateUserIconPosition() {
+        if (currentFloor != -1 && iconFloor != -1 && currentFloor != iconFloor) {
+            if (imgUserLoc != null) {
+                imgUserLoc.setVisibility(View.GONE);
+            }
+            return;
+        }
+
         if (imgFloor == null || imgUserLoc == null || currentRoomPos == null) return;
 
         imgFloor.post(() -> {
