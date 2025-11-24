@@ -38,6 +38,7 @@ import java.util.Collections;
 import java.util.Comparator;
 
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 
 
 /**
@@ -58,9 +59,9 @@ public class UserActivity extends AppCompatActivity {
 
     // ===== 调试开关：true 时完全绕过 WiFi 扫描 =====
     // 等wifi扫描可以用了，DEBUG_BYPASS_WIFI应为false
-    private static final boolean DEBUG_BYPASS_WIFI = false;
+    private static final boolean DEBUG_BYPASS_WIFI = true;
     // 调试时要强制显示的房间
-    private static final String DEBUG_FAKE_ROOM = "405";
+    private static final String DEBUG_FAKE_ROOM = "504";
 
     // ===== 与 AdminActivity 保持一致的参数 =====
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
@@ -95,10 +96,12 @@ public class UserActivity extends AppCompatActivity {
 
     private ImageView imgFloor;
     private ImageView imgUserLoc;
+    private RoomPos currentRoomPos = null;
     // 房间 -> 在平面图中的相对坐标（0~1）
     private Map<String, RoomPos> roomPosMap = new HashMap<>();
     private int currentFloor = -1;
-
+    private String lastLocatedRoom = null;
+    private int iconFloor = -1;
 
     // 接收 WiFi 扫描结果的广播
     private final BroadcastReceiver wifiScanReceiver = new BroadcastReceiver() {
@@ -224,6 +227,18 @@ public class UserActivity extends AppCompatActivity {
 
         // 初始化每个房间在平面图上的相对坐标
         initRoomPositions();
+
+        // 地图所在视图树的滚动监听：一旦有滚动，就更新一下 icon 位置
+        imgFloor.getViewTreeObserver().addOnScrollChangedListener(
+                new ViewTreeObserver.OnScrollChangedListener() {
+                    @Override
+                    public void onScrollChanged() {
+                        if (currentRoomPos != null) {
+                            updateUserIconPosition();
+                        }
+                    }
+                });
+
 
         Button btn3 = findViewById(R.id.btn_floor3);
         Button btn4 = findViewById(R.id.btn_floor4);
@@ -609,42 +624,54 @@ public class UserActivity extends AppCompatActivity {
         roomPosMap.clear();
 
         // 在图片上的相对位置（0 左 / 上，1 右 / 下）
-        roomPosMap.put("301", new RoomPos(0.25f, 1.1f));
-        roomPosMap.put("302", new RoomPos(0.22f, 0.70f));
-        roomPosMap.put("303", new RoomPos(0.19f, 0.50f));
-        roomPosMap.put("304", new RoomPos(0.50f, 1.0f));
-        roomPosMap.put("305", new RoomPos(0.63f, 0.97f));
-        roomPosMap.put("306", new RoomPos(0.80f, 0.37f));
+        // TODO：调数值
+        roomPosMap.put("301", new RoomPos(0.25f, 0.8f));
+        roomPosMap.put("302", new RoomPos(0.12f, 0.40f));
+        roomPosMap.put("303", new RoomPos(0.12f, 0.20f));
+        roomPosMap.put("304", new RoomPos(0.45f, 0.75f));
+        roomPosMap.put("305", new RoomPos(0.60f, 0.70f));
+        roomPosMap.put("306", new RoomPos(0.80f, 0.15f));
 
-        roomPosMap.put("401", new RoomPos(0.25f, 1.1f));
-        roomPosMap.put("402", new RoomPos(0.33f, 1.05f));
-        roomPosMap.put("403", new RoomPos(0.47f, 1.0f));
-        roomPosMap.put("404", new RoomPos(0.54f, 1.0f));
-        roomPosMap.put("405", new RoomPos(0.59f, 0.97f));
-        roomPosMap.put("406", new RoomPos(0.65f, 0.94f));
-        roomPosMap.put("407", new RoomPos(0.90f, 0.80f));
+        roomPosMap.put("401", new RoomPos(0.20f, 0.85f));
+        roomPosMap.put("402", new RoomPos(0.30f, 0.8f));
+        roomPosMap.put("403", new RoomPos(0.44f,0.76f));
+        roomPosMap.put("404", new RoomPos(0.50f, 0.75f));
+        roomPosMap.put("405", new RoomPos(0.55f, 0.70f));
+        roomPosMap.put("406", new RoomPos(0.60f, 0.70f));
+        roomPosMap.put("407", new RoomPos(0.87f, 0.57f));
 
-        roomPosMap.put("501", new RoomPos(0.25f, 1.1f));
-        roomPosMap.put("502", new RoomPos(0.33f, 1.05f));
-        roomPosMap.put("503", new RoomPos(0.54f, 1.0f));
-        roomPosMap.put("504", new RoomPos(0.65f, 0.94f));
-        roomPosMap.put("505", new RoomPos(0.90f, 0.80f));
+        roomPosMap.put("501", new RoomPos(0.20f, 0.85f));
+        roomPosMap.put("502", new RoomPos(0.30f, 0.8f));
+        roomPosMap.put("503", new RoomPos(0.48f,0.76f));
+        roomPosMap.put("504", new RoomPos(0.58f, 0.70f));
+        roomPosMap.put("505", new RoomPos(0.87f, 0.57f));
     }
 
     // 根据房间名，把 ic_locate 图标移动到对应位置
     private void showUserOnRoom(String roomName) {
         if (imgFloor == null || imgUserLoc == null) return;
 
+        // 先根据房间号切换到对应楼层
         autoSwitchFloorByRoom(roomName);
 
         RoomPos pos = roomPosMap.get(roomName);
         if (pos == null) {
             tvResult.append("No position configured for room " + roomName + ".\n");
             imgUserLoc.setVisibility(View.GONE);
+            currentRoomPos = null;
             return;
         }
 
-        // 确保 imgFloor 已经完成布局
+        // 记录当前房间坐标，滚动时还要用
+        currentRoomPos = pos;
+
+        // 直接调用统一的更新函数（里面会 post，保证在布局之后执行）
+        updateUserIconPosition();
+    }
+
+    private void updateUserIconPosition() {
+        if (imgFloor == null || imgUserLoc == null || currentRoomPos == null) return;
+
         imgFloor.post(() -> {
             int w = imgFloor.getWidth();
             int h = imgFloor.getHeight();
@@ -653,14 +680,25 @@ public class UserActivity extends AppCompatActivity {
                 return;
             }
 
-            float x = imgFloor.getX() + pos.xRatio * w;
-            float y = imgFloor.getY() + pos.yRatio * h;
+            // 1. 取平面图在屏幕上的坐标
+            int[] floorLoc = new int[2];
+            imgFloor.getLocationOnScreen(floorLoc);
+
+            // 2. 取根布局在屏幕上的坐标（icon 的父布局）
+            View root = ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
+            int[] rootLoc = new int[2];
+            root.getLocationOnScreen(rootLoc);
+
+            // 3. 把“平面图内的相对坐标”换算到 root 里的绝对坐标
+            float x = floorLoc[0] - rootLoc[0] + currentRoomPos.xRatio * w;
+            float y = floorLoc[1] - rootLoc[1] + currentRoomPos.yRatio * h;
 
             imgUserLoc.setX(x);
             imgUserLoc.setY(y);
             imgUserLoc.setVisibility(View.VISIBLE);
         });
     }
+
 
     // 根据房间号自动切换楼层图：
     private void autoSwitchFloorByRoom(String roomName) {
