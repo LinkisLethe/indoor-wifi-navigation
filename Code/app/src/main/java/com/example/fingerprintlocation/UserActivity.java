@@ -61,7 +61,7 @@ public class UserActivity extends AppCompatActivity {
     // 等wifi扫描可以用了，DEBUG_BYPASS_WIFI应为false
     private static final boolean DEBUG_BYPASS_WIFI = false;
     // 调试时要强制显示的房间
-    private static final String DEBUG_FAKE_ROOM = "406";
+    private static final String DEBUG_FAKE_ROOM = "50B";
 
     // ===== 与 AdminActivity 保持一致的参数 =====
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
@@ -631,6 +631,22 @@ public class UserActivity extends AppCompatActivity {
         roomPosMap.clear();
 
         // 在图片上的相对位置（0 左 / 上，1 右 / 下）
+        // x0A: 电梯间
+        roomPosMap.put("30A", new RoomPos(0.70f, 0.70f));
+        roomPosMap.put("40A", new RoomPos(0.70f, 0.70f));
+        roomPosMap.put("50A", new RoomPos(0.70f, 0.70f));
+
+        // x0B：教室中间的楼梯口
+        roomPosMap.put("30B", new RoomPos(0.38f, 0.75f));
+        roomPosMap.put("40B", new RoomPos(0.38f, 0.75f));
+        roomPosMap.put("50B", new RoomPos(0.38f, 0.75f));
+
+        // x0C：女厕所旁边的楼梯口
+        roomPosMap.put("30C", new RoomPos(0.83f, 0.70f));
+        roomPosMap.put("40C", new RoomPos(0.83f, 0.70f));
+        roomPosMap.put("50C", new RoomPos(0.83f, 0.70f));
+
+
         roomPosMap.put("301", new RoomPos(0.25f, 0.8f));
         roomPosMap.put("302", new RoomPos(0.12f, 0.40f));
         roomPosMap.put("303", new RoomPos(0.12f, 0.20f));
@@ -671,15 +687,9 @@ public class UserActivity extends AppCompatActivity {
         // 记录当前房间坐标，滚动时还要用
         currentRoomPos = pos;
 
+        // 用统一函数解析楼层，兼容 301 / 3A / 50C 这些
+        iconFloor = parseFloorFromRoomName(roomName);
         lastLocatedRoom = roomName;
-        int floor = -1;
-        try {
-            int roomNum = Integer.parseInt(roomName); // 406 -> 4
-            floor = roomNum / 100;
-        } catch (NumberFormatException e) {
-            // 房间名不是纯数字就算未知楼层，floor 保持 -1
-        }
-        iconFloor = floor;
 
         // 直接调用统一的更新函数（里面会 post，保证在布局之后执行）
         updateUserIconPosition();
@@ -722,22 +732,44 @@ public class UserActivity extends AppCompatActivity {
         });
     }
 
+    // 从房间名推断楼层：
+    // 301 -> 3, 406 -> 4, 3A -> 3, 4B -> 4, 50C -> 5
+    private int parseFloorFromRoomName(String roomName) {
+        if (roomName == null || roomName.length() == 0) return -1;
+
+        // 1) 先尝试按整数解析（适用于 301, 406 这种）
+        try {
+            int roomNum = Integer.parseInt(roomName);
+            if (roomNum >= 100) {
+                return roomNum / 100;
+            }
+        } catch (NumberFormatException e) {
+            // ignore, 继续用字符解析
+        }
+
+        // 2) 再从字符串里找第一个数字字符，用它当楼层
+        for (int i = 0; i < roomName.length(); i++) {
+            char c = roomName.charAt(i);
+            if (Character.isDigit(c)) {
+                return c - '0';
+            }
+        }
+
+        // 实在解析不出来
+        return -1;
+    }
+
 
     // 根据房间号自动切换楼层图：
     private void autoSwitchFloorByRoom(String roomName) {
         if (roomName == null || roomName.length() == 0) return;
 
-        int floor;
-        try {
-            // 比如 301 -> 3, 403 -> 4
-            int roomNum = Integer.parseInt(roomName);
-            floor = roomNum / 100;
-        } catch (NumberFormatException e) {
-            // 房间名不是纯数字就算了
+        int floor = parseFloorFromRoomName(roomName);
+        if (floor == -1) {
+            // 解析不出楼层就不自动切
             return;
         }
 
-        // 和当前一样就不重复切
         if (floor == currentFloor) return;
 
         switch (floor) {
@@ -751,7 +783,7 @@ public class UserActivity extends AppCompatActivity {
                 imgFloor.setImageResource(R.drawable.floor5);
                 break;
             default:
-                // 其他楼层你暂时不处理就直接返回
+                // 其他楼层暂时不处理
                 return;
         }
 
