@@ -40,6 +40,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.LinearLayout;
 import android.widget.CheckBox;
 
+
 /**
  * ================================================================
  *                      Admin / Scan Activity

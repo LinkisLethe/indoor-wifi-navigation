@@ -61,7 +61,7 @@ public class UserActivity extends AppCompatActivity {
     // 等wifi扫描可以用了，DEBUG_BYPASS_WIFI应为false
     private static final boolean DEBUG_BYPASS_WIFI = false;
     // 调试时要强制显示的房间
-    private static final String DEBUG_FAKE_ROOM = "50B";
+    private static final String DEBUG_FAKE_ROOM = "t7-505";
 
     // ===== 与 AdminActivity 保持一致的参数 =====
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
@@ -290,9 +290,12 @@ public class UserActivity extends AppCompatActivity {
         btnTabLocate.setOnClickListener(v -> startLocateProcedure());
 
         // “Navigation” 按钮暂时占位
-        btnTabNavigate.setOnClickListener(v ->
-                Toast.makeText(this, "Navigation function not implemented yet.", Toast.LENGTH_SHORT).show()
-        );
+        btnTabNavigate.setOnClickListener(v -> {
+            Toast.makeText(this, "Go to navigation.", Toast.LENGTH_SHORT).show();
+            Intent intent = new Intent(UserActivity.this, NavigationActivity.class);
+            startActivity(intent);
+        });
+
 
         // 点击 "Refresh News" 只是重新显示占位（以后可以换成真实爬虫）
         btnRefreshNews.setOnClickListener(v -> loadNewsPlaceholder());
@@ -630,43 +633,76 @@ public class UserActivity extends AppCompatActivity {
     private void initRoomPositions() {
         roomPosMap.clear();
 
-        // 在图片上的相对位置（0 左 / 上，1 右 / 下）
-        // x0A: 电梯间
-        roomPosMap.put("30A", new RoomPos(0.70f, 0.70f));
-        roomPosMap.put("40A", new RoomPos(0.70f, 0.70f));
-        roomPosMap.put("50A", new RoomPos(0.70f, 0.70f));
+        // 在图片上的相对位置（x:0左 1右, y:0上 1下）
+        // tx-x0A: 电梯
+        roomPosMap.put("t6-30A", new RoomPos(0.80f, 0.70f));
+        roomPosMap.put("t6-40A", new RoomPos(0.80f, 0.74f));
+        roomPosMap.put("t6-50A", new RoomPos(0.77f, 0.66f));
 
-        // x0B：教室中间的楼梯口
-        roomPosMap.put("30B", new RoomPos(0.38f, 0.75f));
-        roomPosMap.put("40B", new RoomPos(0.38f, 0.75f));
-        roomPosMap.put("50B", new RoomPos(0.38f, 0.75f));
+        roomPosMap.put("t7-30A", new RoomPos(0.43f, 0.36f));
+        roomPosMap.put("t7-40A", new RoomPos(0.43f, 0.38f));
+        roomPosMap.put("t7-50A", new RoomPos(0.415f, 0.38f));
 
-        // x0C：女厕所旁边的楼梯口
-        roomPosMap.put("30C", new RoomPos(0.83f, 0.70f));
-        roomPosMap.put("40C", new RoomPos(0.83f, 0.70f));
-        roomPosMap.put("50C", new RoomPos(0.83f, 0.70f));
+        // tx-x0B：教室中间的楼梯口
+        roomPosMap.put("t6-30B", new RoomPos(0.59f, 0.80f));
+        roomPosMap.put("t6-40B", new RoomPos(0.61f, 0.80f));
+        roomPosMap.put("t6-50B", new RoomPos(0.58f, 0.75f));
 
+        roomPosMap.put("t7-30B", new RoomPos(0.25f, 0.43f));
+        roomPosMap.put("t7-40B", new RoomPos(0.25f, 0.45f));
+        roomPosMap.put("t7-50B", new RoomPos(0.23f, 0.45f));
 
-        roomPosMap.put("301", new RoomPos(0.25f, 0.8f));
-        roomPosMap.put("302", new RoomPos(0.12f, 0.40f));
-        roomPosMap.put("303", new RoomPos(0.12f, 0.20f));
-        roomPosMap.put("304", new RoomPos(0.45f, 0.75f));
-        roomPosMap.put("305", new RoomPos(0.60f, 0.70f));
-        roomPosMap.put("306", new RoomPos(0.80f, 0.15f));
+        // tx-x0C：女厕旁边的楼梯口
+        roomPosMap.put("t6-30C", new RoomPos(0.87f, 0.70f));
+        roomPosMap.put("t6-40C", new RoomPos(0.86f, 0.70f));
+        roomPosMap.put("t6-50C", new RoomPos(0.83f, 0.65f));
 
-        roomPosMap.put("401", new RoomPos(0.20f, 0.85f));
-        roomPosMap.put("402", new RoomPos(0.30f, 0.8f));
-        roomPosMap.put("403", new RoomPos(0.44f,0.76f));
-        roomPosMap.put("404", new RoomPos(0.50f, 0.75f));
-        roomPosMap.put("405", new RoomPos(0.55f, 0.70f));
-        roomPosMap.put("406", new RoomPos(0.60f, 0.70f));
-        roomPosMap.put("407", new RoomPos(0.87f, 0.57f));
+        roomPosMap.put("t7-30C", new RoomPos(0.25f, 0.45f));
+        roomPosMap.put("t7-40C", new RoomPos(0.24f, 0.45f));
+        roomPosMap.put("t7-50C", new RoomPos(0.23f, 0.45f));
 
-        roomPosMap.put("501", new RoomPos(0.20f, 0.85f));
-        roomPosMap.put("502", new RoomPos(0.30f, 0.8f));
-        roomPosMap.put("503", new RoomPos(0.48f,0.76f));
-        roomPosMap.put("504", new RoomPos(0.58f, 0.70f));
-        roomPosMap.put("505", new RoomPos(0.87f, 0.57f));
+        // tx-x0x：教室号
+        // 3F
+        roomPosMap.put("t6-301", new RoomPos(0.49f, 0.82f));
+        // Locked: roomPosMap.put("t6-302", new RoomPos(0.12f, 0.40f));
+        roomPosMap.put("t6-303", new RoomPos(0.63f, 0.80f));
+        roomPosMap.put("t6-304", new RoomPos(0.70f, 0.78f));
+
+        roomPosMap.put("t7-301", new RoomPos(0.15f, 0.45f));
+        roomPosMap.put("t7-302", new RoomPos(0.12f, 0.25f));
+        roomPosMap.put("t7-303", new RoomPos(0.10f, 0.10f));
+        roomPosMap.put("t7-304", new RoomPos(0.30f, 0.40f));
+        roomPosMap.put("t7-305", new RoomPos(0.35f, 0.40f));
+        roomPosMap.put("t7-306", new RoomPos(0.45f, 0.10f));
+
+        // 4F
+        roomPosMap.put("t6-401", new RoomPos(0.49f, 0.85f));
+        roomPosMap.put("t6-402", new RoomPos(0.55f, 0.83f));
+        // Locked: roomPosMap.put("t6-403", new RoomPos(0.44f,0.76f));
+        roomPosMap.put("t6-404", new RoomPos(0.65f, 0.80f));
+        roomPosMap.put("t6-405", new RoomPos(0.74f, 0.79f));
+        // Locked: roomPosMap.put("t6-406", new RoomPos(0.60f, 0.70f));
+
+        roomPosMap.put("t7-401", new RoomPos(0.13f, 0.50f));
+        roomPosMap.put("t7-402", new RoomPos(0.20f, 0.49f));
+        roomPosMap.put("t7-403", new RoomPos(0.28f,0.47f));
+        roomPosMap.put("t7-404", new RoomPos(0.32f, 0.46f));
+        roomPosMap.put("t7-405", new RoomPos(0.35f, 0.45f));
+        roomPosMap.put("t7-406", new RoomPos(0.38f, 0.44f));
+        roomPosMap.put("t7-407", new RoomPos(0.54f, 0.35f));
+
+        // 5F
+        roomPosMap.put("t6-501", new RoomPos(0.45f, 0.78f));
+        roomPosMap.put("t6-502", new RoomPos(0.52f, 0.77f));
+        roomPosMap.put("t6-503", new RoomPos(0.65f,0.73f));
+        roomPosMap.put("t6-504", new RoomPos(0.70f, 0.71f));
+        roomPosMap.put("t6-505", new RoomPos(0.87f, 0.61f));
+
+        roomPosMap.put("t7-501", new RoomPos(0.13f, 0.48f));
+        roomPosMap.put("t7-502", new RoomPos(0.18f, 0.47f));
+        roomPosMap.put("t7-503", new RoomPos(0.30f,0.43f));
+        roomPosMap.put("t7-504", new RoomPos(0.35f, 0.41f));
+        roomPosMap.put("t7-505", new RoomPos(0.52f, 0.33f));
     }
 
     // 根据房间名，把 ic_locate 图标移动到对应位置
@@ -735,29 +771,28 @@ public class UserActivity extends AppCompatActivity {
     // 从房间名推断楼层：
     // 301 -> 3, 406 -> 4, 3A -> 3, 4B -> 4, 50C -> 5
     private int parseFloorFromRoomName(String roomName) {
-        if (roomName == null || roomName.length() == 0) return -1;
+        if (roomName == null || roomName.isEmpty()) return -1;
 
-        // 1) 先尝试按整数解析（适用于 301, 406 这种）
-        try {
-            int roomNum = Integer.parseInt(roomName);
-            if (roomNum >= 100) {
-                return roomNum / 100;
-            }
-        } catch (NumberFormatException e) {
-            // ignore, 继续用字符解析
+        // 找 "-"
+        int dashIndex = roomName.indexOf("-");
+        if (dashIndex < 0 || dashIndex == roomName.length() - 1) {
+            return -1;  // 格式不对
         }
 
-        // 2) 再从字符串里找第一个数字字符，用它当楼层
-        for (int i = 0; i < roomName.length(); i++) {
-            char c = roomName.charAt(i);
+        // 取 "-" 后面的部分，例如 "40A"
+        String afterDash = roomName.substring(dashIndex + 1);
+
+        // 从这一段中找第一个数字（楼层号）
+        for (char c : afterDash.toCharArray()) {
             if (Character.isDigit(c)) {
-                return c - '0';
+                return c - '0';  // 字符转数字
             }
         }
 
-        // 实在解析不出来
+        // 找不到数字则无法解析
         return -1;
     }
+
 
 
     // 根据房间号自动切换楼层图：
