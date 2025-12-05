@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/navigation_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FFFFFF">
+
+    <!-- 顶部 Tab：Relocate / Navigation -->
+    <LinearLayout
+        android:id="@+id/tabLayout"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:orientation="horizontal"
+        android:background="@color/design_default_color_primary"
+        android:layout_alignParentTop="true">
+
+        <Button
+            android:id="@+id/btnTabLocate"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="Relocate"
+            android:textColor="@android:color/white"
+            android:background="@android:color/transparent" />
+
+        <Button
+            android:id="@+id/btnTabNavigate"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:text="Navigation"
+            android:textColor="@android:color/white"
+            android:background="@android:color/holo_blue_dark" />
+        <!-- 让 Navigation 看起来是选中状态 -->
+    </LinearLayout>
+
+    <!-- 1. 顶部输入区域：start / end room -->
+    <LinearLayout
+        android:id="@+id/layout_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:layout_below="@id/tabLayout">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <EditText
+                android:id="@+id/et_start_room"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Start: Room &amp; Position"
+                android:padding="8dp" />
+
+            <EditText
+                android:id="@+id/et_end_room"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="End: Room"
+                android:padding="8dp"
+                android:layout_marginTop="8dp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_confirm"
+            android:layout_width="80dp"
+            android:layout_height="match_parent"
+            android:text="确认"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
+
+    <!-- 2. 地图 & 楼层切换区域 -->
+    <LinearLayout
+        android:id="@+id/layout_map_area"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:orientation="horizontal"
+        android:layout_below="@id/layout_input"
+        android:layout_above="@id/layout_info"
+        android:weightSum="10"
+        android:padding="8dp">
+
+        <!-- 2.1 楼层按钮区域 -->
+        <LinearLayout
+            android:id="@+id/layout_floor_buttons"
+            android:layout_width="60dp"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:weightSum="3">
+
+            <Button
+                android:id="@+id/btn_floor5"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:text="5F"
+                android:textColor="@android:color/white"
+                android:gravity="center"
+                android:backgroundTint="@color/design_default_color_primary" />
+
+            <Button
+                android:id="@+id/btn_floor4"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:text="4F"
+                android:textColor="@android:color/white"
+                android:gravity="center"
+                android:backgroundTint="@color/design_default_color_primary" />
+
+            <Button
+                android:id="@+id/btn_floor3"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:text="3F"
+                android:textColor="@android:color/white"
+                android:gravity="center"
+                android:backgroundTint="@color/design_default_color_primary" />
+        </LinearLayout>
+
+
+        <!-- 2.2 地图显示区域 -->
+        <RelativeLayout
+            android:id="@+id/layout_map_container"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="9">
+
+            <!-- 地图图像 -->
+            <ImageView
+                android:id="@+id/img_floor_map"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:src="@drawable/floor3"
+                android:scaleType="fitCenter" />
+
+            <!-- 路径绘制层（叠加在地图上） -->
+            <com.example.fingerprintlocation.LineView
+                android:id="@+id/path_overlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clickable="false" />
+
+            <!-- 定位图标 -->
+            <ImageView
+                android:id="@+id/img_location_pin"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:src="@drawable/ic_locate"
+                android:visibility="gone" />
+        </RelativeLayout>
+
+    </LinearLayout>
+
+
+    <!-- 3. 底部定位信息栏 -->
+    <TextView
+        android:id="@+id/layout_info"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:gravity="center_vertical"
+        android:text="定位信息..."
+        android:textSize="14sp"
+        android:background="#EEEEEE"
+        android:padding="12dp"
+        android:layout_alignParentBottom="true" />
+
+</RelativeLayout>
