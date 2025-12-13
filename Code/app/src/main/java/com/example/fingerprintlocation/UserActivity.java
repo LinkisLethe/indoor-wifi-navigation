@@ -21,6 +21,12 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Gravity;
+import android.view.ViewGroup;
+
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -36,6 +42,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
@@ -102,6 +110,9 @@ public class UserActivity extends AppCompatActivity {
     // 房间 -> 在平面图中的相对坐标（0~1）
     private Map<String, RoomPos> roomPosMap = new HashMap<>();
     private int currentFloor = -1;
+
+    private final ExecutorService netPool = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     // 接收 WiFi 扫描结果的广播
     private final BroadcastReceiver wifiScanReceiver = new BroadcastReceiver() {
@@ -285,7 +296,9 @@ public class UserActivity extends AppCompatActivity {
         registerReceiver(wifiScanReceiver, intentFilter);
 
         // 底部新闻：先放占位文本
-        loadNewsPlaceholder();
+        // loadNewsPlaceholder();
+        loadFstEvents();
+
         // 🟢 点击“Relocate”按钮 → 手动执行定位
         btnTabLocate.setOnClickListener(v -> startLocateProcedure());
 
@@ -298,7 +311,9 @@ public class UserActivity extends AppCompatActivity {
 
 
         // 点击 "Refresh News" 只是重新显示占位（以后可以换成真实爬虫）
-        btnRefreshNews.setOnClickListener(v -> loadNewsPlaceholder());
+        // btnRefreshNews.setOnClickListener(v -> loadNewsPlaceholder());
+        btnRefreshNews.setOnClickListener(v -> loadFstEvents());
+
 
         // 打开页面后自动定位一次（库不为空才做）
         if (!fingerprintLibrary.isEmpty()) {
@@ -727,7 +742,6 @@ public class UserActivity extends AppCompatActivity {
         iconFloor = parseFloorFromRoomName(roomName);
         lastLocatedRoom = roomName;
 
-        // 直接调用统一的更新函数（里面会 post，保证在布局之后执行）
         updateUserIconPosition();
     }
 
@@ -872,4 +886,110 @@ public class UserActivity extends AppCompatActivity {
             newsContainer.addView(tv);
         }
     }
+
+//    private void loadFstEvents() {
+//        // 可选：先清空+显示“Loading...”
+//        newsContainer.removeAllViews();
+//        TextView loading = new TextView(this);
+//        loading.setText("Loading events...");
+//        newsContainer.addView(loading);
+//
+//        netPool.execute(() -> {
+//            try {
+//                List<EventItem> items = FstEventScraper.fetchLatest10();
+//                mainHandler.post(() -> renderEvents(items));
+//            } catch (Exception e) {
+//                mainHandler.post(() -> {
+//                    newsContainer.removeAllViews();
+//                    TextView err = new TextView(this);
+//                    err.setText("Load failed: " + e.getMessage());
+//                    newsContainer.addView(err);
+//                });
+//            }
+//        });
+//    }
+private void loadFstEvents() {
+    if (newsContainer == null) return;
+
+    newsContainer.removeAllViews();
+    TextView loading = new TextView(this);
+    loading.setText("Loading events...");
+    newsContainer.addView(loading);
+
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    Handler main = new Handler(Looper.getMainLooper());
+
+    pool.execute(() -> {
+        try {
+            List<EventItem> items = FstEventScraper.fetchLatest10();
+            Log.d("FST", "items size=" + (items == null ? -1 : items.size()));
+
+            main.post(() -> {
+                newsContainer.removeAllViews();
+                if (items == null || items.isEmpty()) {
+                    TextView tv = new TextView(this);
+                    tv.setText("No events parsed (items is empty).");
+                    newsContainer.addView(tv);
+                } else {
+                    renderEvents(items);
+                }
+            });
+        } catch (Exception e) {
+            Log.e("FST", "fetch failed", e);
+            main.post(() -> {
+                newsContainer.removeAllViews();
+                TextView tv = new TextView(this);
+                tv.setText("Load failed: " + e.getClass().getSimpleName() + "\n" + e.getMessage());
+                newsContainer.addView(tv);
+            });
+        }
+    });
+}
+
+
+    private void renderEvents(List<EventItem> items) {
+        newsContainer.removeAllViews();
+
+        for (EventItem ev : items) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, 10, 0, 10);
+            row.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
+
+            // 左边：标题（可点开浏览器）+ 简要信息
+            TextView tv = new TextView(this);
+            tv.setLayoutParams(new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+            ));
+            String line2 = ev.date + " " + ev.timeRange;
+            if (ev.speaker != null && !ev.speaker.isEmpty()) line2 += " | " + ev.speaker;
+            if (ev.venue != null && !ev.venue.isEmpty()) line2 += " | " + ev.venue;
+
+            tv.setText(ev.title + "\n" + line2);
+            tv.setOnClickListener(v -> {
+                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(ev.url));
+                startActivity(i);
+            });
+
+            // 右边：显示定位按钮
+            Button btn = new Button(this);
+            btn.setText("ShowLocation");
+            btn.setOnClickListener(v -> {
+                Intent i = new Intent(UserActivity.this, CampusMapActivity.class);
+                i.putExtra("title", ev.title);
+                i.putExtra("venue", ev.venue);
+                i.putExtra("url", ev.url);
+                startActivity(i);
+            });
+
+            row.addView(tv);
+            row.addView(btn);
+            newsContainer.addView(row);
+        }
+    }
+
 }
