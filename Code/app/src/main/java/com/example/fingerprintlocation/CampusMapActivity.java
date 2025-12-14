@@ -83,10 +83,14 @@ public class CampusMapActivity extends AppCompatActivity {
         if (m.find()) {
             String b = m.group(1);
             switch (b) {
-                case "T1": x = 730; y = 1200; break;
-                case "T2": x = 665; y = 1200; break;
-                case "T3": x = 620; y = 1200; break;
-                case "T7": x = 621; y = 1090; break;
+                case "T1": x = 1050; y = 1000; break;
+                case "T2": x = 990; y = 1000; break;
+                case "T3": x = 890; y = 990; break;
+                case "T4": x = 1150; y = 815; break;
+                case "T6": x = 1014; y = 846; break;
+                case "T7": x = 900; y = 840; break;
+                case "T8": x = 837; y = 873; break;
+                case "T29": x = 762; y = 926; break;
                 default: break;
             }
         }
