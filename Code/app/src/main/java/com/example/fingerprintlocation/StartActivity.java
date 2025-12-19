@@ -1,33 +1,38 @@
 package com.example.fingerprintlocation;
-import androidx.appcompat.app.AppCompatActivity;
+
 import android.content.Intent;
 import android.os.Bundle;
-import android.widget.Button;
-
+import android.view.View; // 确保导入了 View
+// 如果你以前导入了 android.widget.Button，可以删掉它
+import androidx.appcompat.app.AppCompatActivity;
 
 public class StartActivity extends AppCompatActivity {
-
-    private Button btnAdmin;
-    private Button btnUser;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_start);
 
-        btnAdmin = findViewById(R.id.btnAdmin);
-        btnUser = findViewById(R.id.btnUser);
+        // 【关键修改点】
+        // 这里的类型必须改为 View 或 LinearLayout，不能再是 Button
+        View btnUser = findViewById(R.id.btnUser);
+        View btnAdmin = findViewById(R.id.btnAdmin);
 
-
-        btnAdmin.setOnClickListener(v -> {
-            Intent intent = new Intent(StartActivity.this, AdminActivity.class);
-            startActivity(intent);
+        // 设置点击事件（View 同样支持 setOnClickListener）
+        btnUser.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent intent = new Intent(StartActivity.this, UserActivity.class);
+                startActivity(intent);
+            }
         });
 
-        // 跳到定位页面
-        btnUser.setOnClickListener(v -> {
-            Intent intent = new Intent(StartActivity.this, UserActivity.class);
-            startActivity(intent);
+        btnAdmin.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent intent = new Intent(StartActivity.this, AdminActivity.class);
+                startActivity(intent);
+            }
         });
     }
 }

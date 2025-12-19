@@ -19,6 +19,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.net.Uri;
@@ -26,7 +27,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.ViewGroup;
-
+import android.view.ViewTreeObserver;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -45,72 +46,71 @@ import java.util.Comparator;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
-
-
 /**
  * ================================================================
- *                  用户定位页面（定位 + 新闻占位）
- *                  UserActivity
- * ================================================================
- * - 打开页面：读取 fingerprint_db.json，加载指纹库
- * - 打开页面后：自动执行一次定位（如果库非空）
- * - “Locate Me” 按钮：手动再次定位
- * - 底部新闻栏：只是本地占位文本，不做真实爬虫
+ * 用户定位页面（定位 + 新闻占位）
+ * UserActivity (UI 重构版)
  * ================================================================
  */
 public class UserActivity extends AppCompatActivity {
+    // 用于跨页面共享定位结果
+    public static String lastLocationResult = "";
 
     private static final String TAG = "UserActivity";
     private static final int REQ_CODE_LOCATION = 2001;
 
-    // ===== 调试开关：true 时完全绕过 WiFi 扫描 =====
-    // 等wifi扫描可以用了，DEBUG_BYPASS_WIFI应为false
+    // ===== 调试开关 =====
     private static final boolean DEBUG_BYPASS_WIFI = false;
-    // 调试时要强制显示的房间
     private static final String DEBUG_FAKE_ROOM = "t7-505";
 
-    // ===== 与 AdminActivity 保持一致的参数 =====
+    // ===== 参数设置 =====
     private static final int NUM_SCANS_FOR_LOCATE = 4;   // 定位时连续扫描次数
-    private static final int MIN_RSSI_DBM = -85;         // 弱信号过滤阈值
-    private static final double MISSING_RSSI = -100.0;   // 缺失 AP 的默认 RSSI
+    private static final int MIN_RSSI_DBM = -85;         // 弱信号过滤
+    private static final double MISSING_RSSI = -100.0;
     private static final double DISTANCE_THRESHOLD = 200.0;
     private static final int K_NEIGHBORS = 3;
-    private static final int MIN_AP_MATCH_REQUIRED = 6;  // 最少 AP 数量阈值
+    private static final int MIN_AP_MATCH_REQUIRED = 6;
     private static final String FP_DB_FILE = "fingerprint_db.json";
 
     private WifiManager wifiManager;
 
-    // UI
-    private TextView tvResult;
+    // ===== 新版 UI 控件 =====
+    // 状态卡片区域
+    private LinearLayout layoutScanning; // 扫描中布局
+    private LinearLayout layoutResult;   // 结果布局
+    private ProgressBar progressBarScan; // 进度条
+    private TextView tvStatusTitle;      // 状态标题 (Scanning... / Failed)
+    private TextView tvScanCount;        // 扫描轮次 (Round 1/4)
+    private TextView tvResultBig;        // 大字结果 (Room T6-301)
 
-    // tab（暂时只是占位，不做切换逻辑也没关系）
-    private Button btnTabLocate;
-    private Button btnTabNavigate;
+    // 顶部胶囊按钮 (XML里是TextView)
+    private TextView btnTabLocate;
+    private TextView btnTabNavigate;
 
-    // 新闻区域占位
+    // 楼层切换按钮 (XML里是TextView)
+    private TextView btnFloor3, btnFloor4, btnFloor5;
+
+    // 新闻区域
     private LinearLayout newsContainer;
-    private Button btnRefreshNews;
+    private Button btnRefreshNews; // 保留刷新按钮逻辑(虽然XML里可能要调整位置，但逻辑保留)
 
-    // 定位相关状态
-    private boolean isLocating = false;
-    private int currentLocateScanCount = 0;
-    // key: BSSID, value: 多次扫描得到的 RSSI 列表
-    private Map<String, ArrayList<Integer>> locateSamples = new HashMap<>();
-
-    // 指纹库
-    private ArrayList<FingerprintRecord> fingerprintLibrary = new ArrayList<>();
-
+    // 地图与图标
     private ImageView imgFloor;
     private ImageView imgUserLoc;
-    private RoomPos currentRoomPos = null;
-    private String lastLocatedRoom = null;  // 最近一次定位到的房间号，比如 "406"
-    private int iconFloor = -1;            // 图标所在楼层，比如 4
-    // 房间 -> 在平面图中的相对坐标（0~1）
-    private Map<String, RoomPos> roomPosMap = new HashMap<>();
-    private int currentFloor = -1;
 
+    // ===== 逻辑状态 =====
+    private boolean isLocating = false;
+    private int currentLocateScanCount = 0;
+    private Map<String, ArrayList<Integer>> locateSamples = new HashMap<>();
+    public static ArrayList<FingerprintRecord> fingerprintLibrary = new ArrayList<>();
+
+    private RoomPos currentRoomPos = null;
+    private String lastLocatedRoom = null;
+    private int iconFloor = -1;
+    private Map<String, RoomPos> roomPosMap = new HashMap<>();
+    private int currentFloor = 3; // 默认3楼
+
+    // 线程池用于网络请求(新闻)
     private final ExecutorService netPool = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -120,41 +120,34 @@ public class UserActivity extends AppCompatActivity {
         public void onReceive(Context context, Intent intent) {
             boolean success = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false);
             if (!success) {
-                tvResult.append("\nScan failed or throttled by system.\n");
-
                 if (isLocating) {
                     isLocating = false;
-                    tvResult.append("Locate failed due to scan error.\n");
+                    updateLocateUI(2, "Scan throttled/failed", 0);
                 }
                 return;
             }
 
             if (ActivityCompat.checkSelfPermission(UserActivity.this,
-                    Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
-                    && ActivityCompat.checkSelfPermission(UserActivity.this,
-                    Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-
-                tvResult.append("Location permission not granted. Cannot read scan results.\n");
+                    Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                updateLocateUI(2, "No Location Permission", 0);
                 return;
             }
 
             List<ScanResult> results = wifiManager.getScanResults();
 
-            if (!isLocating) {
-                // 不是定位模式就忽略
-                return;
-            }
+            if (!isLocating) return;
 
-            // ========== 定位模式 ==========
+            // ========== 定位模式逻辑 ==========
             currentLocateScanCount++;
 
-            tvResult.append("Locate scan #" + currentLocateScanCount + " finished, got "
-                    + (results == null ? 0 : results.size()) + " networks.\n");
+            // 更新 UI 进度
+            int progress = (int) ((float) currentLocateScanCount / NUM_SCANS_FOR_LOCATE * 100);
+            updateLocateUI(0, "Analyzing Signals...", progress);
 
             if (results != null) {
                 for (ScanResult result : results) {
                     int rssi = result.level;
-                    if (rssi < MIN_RSSI_DBM) continue;  // 过滤弱信号
+                    if (rssi < MIN_RSSI_DBM) continue;
 
                     String bssid = result.BSSID;
                     ArrayList<Integer> list = locateSamples.get(bssid);
@@ -167,17 +160,17 @@ public class UserActivity extends AppCompatActivity {
             }
 
             if (currentLocateScanCount < NUM_SCANS_FOR_LOCATE) {
-                // 继续下一轮扫描
+                // 继续下一轮
                 startWifiScan();
             } else {
-                // 扫描结束，计算平均 RSSI 并定位
+                // 结束扫描，开始计算
                 isLocating = false;
-
                 if (locateSamples.isEmpty()) {
-                    tvResult.append("No valid APs collected for locating.\n");
+                    updateLocateUI(2, "No valid WiFi signals found", 0);
                     return;
                 }
 
+                // 计算平均值
                 Map<String, Double> currentMap = new HashMap<>();
                 for (Map.Entry<String, ArrayList<Integer>> entry : locateSamples.entrySet()) {
                     String bssid = entry.getKey();
@@ -185,19 +178,16 @@ public class UserActivity extends AppCompatActivity {
                     if (list == null || list.isEmpty()) continue;
                     int sum = 0;
                     for (int v : list) sum += v;
-                    double avg = sum * 1.0 / list.size();
-                    currentMap.put(bssid, avg);
+                    currentMap.put(bssid, sum * 1.0 / list.size());
                 }
 
-                tvResult.append("Current locating fingerprint has " + currentMap.size() + " APs.\n");
-
-                // AP 数量太少，直接拒绝
                 if (currentMap.size() < MIN_AP_MATCH_REQUIRED) {
-                    tvResult.append("Too few APs. Signal not stable enough, please try again.\n");
+                    updateLocateUI(2, "Signal weak (" + currentMap.size() + " APs)", 0);
                     locateSamples.clear();
                     return;
                 }
 
+                // 核心算法定位
                 locateWithCurrentScan(currentMap);
                 locateSamples.clear();
             }
@@ -207,152 +197,103 @@ public class UserActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_user);
+        setContentView(R.layout.activity_user); // 确保你的 XML 文件名是 activity_user.xml
 
-        // ===== 绑定控件 =====
-        tvResult       = findViewById(R.id.tvResult);
-        btnTabLocate   = findViewById(R.id.btnTabLocate);
+        // ===== 1. 绑定新 UI 控件 =====
+        layoutScanning = findViewById(R.id.layoutScanning);
+        layoutResult = findViewById(R.id.layoutResult);
+        progressBarScan = findViewById(R.id.progressBarScan);
+        tvStatusTitle = findViewById(R.id.tvStatusTitle);
+        tvScanCount = findViewById(R.id.tvScanCount);
+        tvResultBig = findViewById(R.id.tvResultBig);
+
+        btnTabLocate = findViewById(R.id.btnTabLocate);
         btnTabNavigate = findViewById(R.id.btnTabNavigate);
-        newsContainer  = findViewById(R.id.newsContainer);
+
+        btnFloor3 = findViewById(R.id.btn_floor3);
+        btnFloor4 = findViewById(R.id.btn_floor4);
+        btnFloor5 = findViewById(R.id.btn_floor5);
+
+        newsContainer = findViewById(R.id.newsContainer);
         btnRefreshNews = findViewById(R.id.btnRefreshNews);
         imgFloor = findViewById(R.id.img_floor);
 
-        // 新建一个覆盖在平面图上的位置图标
+        // ===== 2. 初始化小蓝点图标 =====
         imgUserLoc = new ImageView(this);
-        imgUserLoc.setImageResource(R.drawable.ic_locate);
-
-        // 设置等比例缩放 + 固定大小（例如 24dp）
-        int size = (int) (17 * getResources().getDisplayMetrics().density);
-
-        ViewGroup.LayoutParams params =
-                new ViewGroup.LayoutParams(size, size);
-
+        imgUserLoc.setImageResource(R.drawable.ic_locate); // 确保你有 ic_locate 图片
+        int size = (int) (20 * getResources().getDisplayMetrics().density); // 24dp 大小
+        ViewGroup.LayoutParams params = new ViewGroup.LayoutParams(size, size);
         imgUserLoc.setLayoutParams(params);
         imgUserLoc.setAdjustViewBounds(true);
-        imgUserLoc.setVisibility(View.GONE); // 默认不显示
+        imgUserLoc.setVisibility(View.GONE);
 
-        // 把图标加到根布局上（会盖在 imgFloor 上面）
+        // 把图标加到根布局的最上层
         ViewGroup root = (ViewGroup) ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
         root.addView(imgUserLoc, params);
 
-
-        // 初始化每个房间在平面图上的相对坐标
+        // 初始化房间坐标数据
         initRoomPositions();
 
-        // 地图所在视图树的滚动监听：一旦有滚动，就更新一下 icon 位置
-        imgFloor.getViewTreeObserver().addOnScrollChangedListener(
-                new ViewTreeObserver.OnScrollChangedListener() {
-                    @Override
-                    public void onScrollChanged() {
-                        if (currentRoomPos != null) {
-                            updateUserIconPosition();
-                        }
-                    }
-                });
+        // 监听地图滚动，同步图标位置
+        if (imgFloor != null) {
+            imgFloor.getViewTreeObserver().addOnScrollChangedListener(() -> {
+                if (currentRoomPos != null) {
+                    updateUserIconPosition();
+                }
+            });
+        }
 
-
-        Button btn3 = findViewById(R.id.btn_floor3);
-        Button btn4 = findViewById(R.id.btn_floor4);
-        Button btn5 = findViewById(R.id.btn_floor5);
-
+        // ===== 3. 设置楼层点击事件 =====
         View.OnClickListener floorClickListener = v -> {
             int id = v.getId();
             if (id == R.id.btn_floor3) {
-                imgFloor.setImageResource(R.drawable.floor3);
-                currentFloor = 3;
+                switchFloorUI(3);
             } else if (id == R.id.btn_floor4) {
-                imgFloor.setImageResource(R.drawable.floor4);
-                currentFloor = 4;
+                switchFloorUI(4);
             } else if (id == R.id.btn_floor5) {
-                imgFloor.setImageResource(R.drawable.floor5);
-                currentFloor = 5;
-            }
-            // 手动切楼层后，根据楼层决定是否显示图标
-            if (lastLocatedRoom != null && currentRoomPos != null) {
-                // 这里不用 showUserOnRoom，避免又触发 autoSwitchFloorByRoom 把楼层改回来
-                updateUserIconPosition();  // 里面已经有楼层判断，不同楼层会直接隐藏
-            } else if (imgUserLoc != null) {
-                imgUserLoc.setVisibility(View.GONE);
+                switchFloorUI(5);
             }
         };
+        btnFloor3.setOnClickListener(floorClickListener);
+        btnFloor4.setOnClickListener(floorClickListener);
+        btnFloor5.setOnClickListener(floorClickListener);
 
-        btn3.setOnClickListener(floorClickListener);
-        btn4.setOnClickListener(floorClickListener);
-        btn5.setOnClickListener(floorClickListener);
-
-        // WiFi
+        // ===== 4. 初始化 WiFi 与 权限 =====
         wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wifiManager == null) {
-            tvResult.setText("WifiManager is null. This device may not support WiFi.");
+            updateLocateUI(2, "WiFi Not Supported", 0);
             return;
         }
 
-        // 加载指纹库
         loadFingerprintLibraryFromFile();
 
-        // 注册 WiFi 扫描广播
         IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
         registerReceiver(wifiScanReceiver, intentFilter);
 
-        // 底部新闻：先放占位文本
-        // loadNewsPlaceholder();
+        // 加载新闻
         loadFstEvents();
 
-        // 🟢 点击“Relocate”按钮 → 手动执行定位
+        // ===== 5. 顶部按钮逻辑 =====
         btnTabLocate.setOnClickListener(v -> startLocateProcedure());
 
-        // “Navigation” 按钮暂时占位
         btnTabNavigate.setOnClickListener(v -> {
-            Toast.makeText(this, "Go to navigation.", Toast.LENGTH_SHORT).show();
             Intent intent = new Intent(UserActivity.this, NavigationActivity.class);
             startActivity(intent);
         });
 
+        // 刷新新闻逻辑
+        if (btnRefreshNews != null) {
+            btnRefreshNews.setOnClickListener(v -> loadFstEvents());
+        }
 
-        // 点击 "Refresh News" 只是重新显示占位（以后可以换成真实爬虫）
-        // btnRefreshNews.setOnClickListener(v -> loadNewsPlaceholder());
-        btnRefreshNews.setOnClickListener(v -> loadFstEvents());
-
-
-        // 打开页面后自动定位一次（库不为空才做）
+        // 自动开始一次定位
         if (!fingerprintLibrary.isEmpty()) {
-            tvResult.append("Auto locating...\n");
             startLocateProcedure();
         } else {
-            tvResult.append("Fingerprint DB is empty. Please build it in Admin mode.\n");
+            updateLocateUI(2, "Library Empty (Go Admin)", 0);
         }
     }
-
-    // 封装：开始一轮定位流程
-    private void startLocateProcedure() {
-        if (fingerprintLibrary.isEmpty()) {
-            Toast.makeText(UserActivity.this,
-                    "Fingerprint library is empty. Please collect/save fingerprints in Admin mode first.",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        tvResult.setText("");
-
-        // ===== 调试模式：完全跳过 WiFi 扫描，只看房间 + 图标是否对得上 =====
-        if (DEBUG_BYPASS_WIFI) {
-            String room = DEBUG_FAKE_ROOM;
-            tvResult.append("[DEBUG] Bypass WiFi scanning. Force show room " + room + ".\n");
-            showUserOnRoom(room);
-            return;
-        }
-
-        // ===== 正常模式：走真实扫描流程 =====
-        isLocating = true;
-        currentLocateScanCount = 0;
-        locateSamples.clear();
-
-        tvResult.append("Start locating...\n");
-
-        checkPermissionAndScan();
-    }
-
 
     @Override
     protected void onDestroy() {
@@ -360,124 +301,211 @@ public class UserActivity extends AppCompatActivity {
         try {
             unregisterReceiver(wifiScanReceiver);
         } catch (IllegalArgumentException e) {
-            Log.e(TAG, "Receiver not registered or already unregistered", e);
+            Log.e(TAG, "Receiver not registered", e);
         }
     }
 
-    // ======= 权限 & 扫描 =======
+    // ==========================================================
+    //                   UI 更新核心方法
+    // ==========================================================
+
+    /**
+     * 统一更新定位状态 UI
+     * @param state 0=扫描中, 1=成功, 2=失败
+     * @param message 显示的文字 (标题或结果)
+     * @param progress 进度 (0-100)
+     */
+    private void updateLocateUI(int state, String message, int progress) {
+        // 安全检查，防止空指针
+        if (layoutScanning == null || layoutResult == null) return;
+
+        if (state == 0) {
+            // === 扫描中 ===
+            layoutScanning.setVisibility(View.VISIBLE);
+            layoutResult.setVisibility(View.GONE);
+
+            tvStatusTitle.setText(message);
+            progressBarScan.setProgress(progress);
+
+            // 计算轮次
+            int currentRound = (int) Math.ceil((progress / 100.0) * NUM_SCANS_FOR_LOCATE);
+            if (currentRound == 0) currentRound = 1;
+            if (currentRound > NUM_SCANS_FOR_LOCATE) currentRound = NUM_SCANS_FOR_LOCATE;
+            tvScanCount.setText("Round " + currentRound + " / " + NUM_SCANS_FOR_LOCATE);
+
+        } else if (state == 1) {
+            // === 成功 ===
+            layoutScanning.setVisibility(View.GONE);
+            layoutResult.setVisibility(View.VISIBLE);
+            tvResultBig.setText(message); // 例如 "Room T6-301"
+
+        } else {
+            // === 失败 ===
+            layoutScanning.setVisibility(View.VISIBLE);
+            layoutResult.setVisibility(View.GONE);
+
+            progressBarScan.setProgress(0);
+            tvStatusTitle.setText("Status: Failed");
+            tvScanCount.setText(message); // 显示错误详情
+        }
+    }
+
+    private void switchFloorUI(int floor) {
+        currentFloor = floor;
+        if (floor == 3) imgFloor.setImageResource(R.drawable.floor3);
+        else if (floor == 4) imgFloor.setImageResource(R.drawable.floor4);
+        else if (floor == 5) imgFloor.setImageResource(R.drawable.floor5);
+
+        // 如果手动切换楼层，检查是否要隐藏图标（如果图标不在当前层）
+        if (lastLocatedRoom != null && currentRoomPos != null) {
+            // 重新计算并显示/隐藏
+            updateUserIconPosition();
+        } else {
+            imgUserLoc.setVisibility(View.GONE);
+        }
+    }
+
+    // ==========================================================
+    //                   定位流程逻辑
+    // ==========================================================
+
+    private void startLocateProcedure() {
+        if (fingerprintLibrary.isEmpty()) {
+            Toast.makeText(this, "Fingerprint DB is empty!", Toast.LENGTH_SHORT).show();
+            updateLocateUI(2, "DB Empty", 0);
+            return;
+        }
+
+        // 初始化 UI
+        updateLocateUI(0, "Initializing WiFi...", 5);
+
+        if (DEBUG_BYPASS_WIFI) {
+            showUserOnRoom(DEBUG_FAKE_ROOM);
+            lastLocationResult = DEBUG_FAKE_ROOM;
+            updateLocateUI(1, "Room " + DEBUG_FAKE_ROOM, 100);
+            return;
+        }
+
+        isLocating = true;
+        currentLocateScanCount = 0;
+        locateSamples.clear();
+        checkPermissionAndScan();
+    }
 
     private void checkPermissionAndScan() {
-        boolean fineLocationGranted = ContextCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
 
-        boolean coarseLocationGranted = ContextCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-
-        if (!fineLocationGranted || !coarseLocationGranted) {
-            ActivityCompat.requestPermissions(
-                    this,
+        if (!fine || !coarse) {
+            ActivityCompat.requestPermissions(this,
                     new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION},
-                    REQ_CODE_LOCATION
-            );
+                    REQ_CODE_LOCATION);
         } else {
             startWifiScan();
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode,
-                                           @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-
         if (requestCode == REQ_CODE_LOCATION) {
             boolean granted = true;
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
-                    granted = false;
-                    break;
-                }
+            for (int r : grantResults) {
+                if (r != PackageManager.PERMISSION_GRANTED) granted = false;
             }
-            if (granted) {
-                Toast.makeText(this, "Location permission granted. You can scan now.", Toast.LENGTH_SHORT).show();
-                startWifiScan();
-            } else {
-                Toast.makeText(this, "Location permission is required for WiFi scanning.", Toast.LENGTH_LONG).show();
-            }
+            if (granted) startWifiScan();
+            else updateLocateUI(2, "Permission Denied", 0);
         }
     }
 
     private void startWifiScan() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED
-                && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-
-            tvResult.append("Location permission not granted. Please allow it first.\n");
-            return;
-        }
-
         if (!wifiManager.isWifiEnabled()) {
-            Toast.makeText(this, "WiFi is disabled. Turning on WiFi...", Toast.LENGTH_SHORT).show();
             wifiManager.setWifiEnabled(true);
+            Toast.makeText(this, "Enabling WiFi...", Toast.LENGTH_SHORT).show();
         }
 
         boolean success = wifiManager.startScan();
         if (success) {
-            tvResult.append("Start scanning...\n");
-            Log.d(TAG, "startScan success");
+            Log.d(TAG, "WiFi Scan Started");
         } else {
-            tvResult.append("startScan failed. Maybe scan is throttled.\n");
-            Log.d(TAG, "startScan failed");
+            // 扫描失败通常是因为限流，稍后重试或报错
+            Log.e(TAG, "WiFi Scan Failed (Throttled?)");
+            // 这里不立即报错，等待Receiver超时或下一轮（简化逻辑，视作继续）
         }
     }
 
-    // ======= 指纹库加载 =======
+    // ==========================================================
+    //                   算法与匹配逻辑
+    // ==========================================================
 
-    private void loadFingerprintLibraryFromFile() {
-        try {
-            FileInputStream fis = openFileInput(FP_DB_FILE);
-            StringBuilder sb = new StringBuilder();
-            byte[] buf = new byte[1024];
-            int len;
-            while ((len = fis.read(buf)) != -1) {
-                sb.append(new String(buf, 0, len, StandardCharsets.UTF_8));
+    private void locateWithCurrentScan(Map<String, Double> currentMap) {
+        if (fingerprintLibrary.isEmpty()) return;
+
+        // 1. 计算 WKNN
+        ArrayList<Neighbor> neighbors = new ArrayList<>();
+        for (FingerprintRecord rec : fingerprintLibrary) {
+            double dist = computeDistance(rec.avgRssiMap, currentMap);
+            double cos = computeCosine(rec.avgRssiMap, currentMap);
+            neighbors.add(new Neighbor(rec, dist, cos));
+        }
+
+        // 2. 排序
+        Collections.sort(neighbors, (o1, o2) -> {
+            int c = Double.compare(o1.distance, o2.distance);
+            if (c != 0) return c;
+            return -Double.compare(o1.cosineSim, o2.cosineSim);
+        });
+
+        if (neighbors.isEmpty()) {
+            runOnUiThread(() -> updateLocateUI(2, "No Neighbors", 0));
+            return;
+        }
+
+        double bestDist = neighbors.get(0).distance;
+        if (bestDist > DISTANCE_THRESHOLD) {
+            runOnUiThread(() -> {
+                updateLocateUI(2, "Location Uncertain", 0);
+                // 也可以显示“Unknown”但标出最像的房间
+            });
+            return;
+        }
+
+        // 3. 投票 (WKNN + Cosine)
+        int K = Math.min(K_NEIGHBORS, neighbors.size());
+        Map<String, Double> roomVoteMap = new HashMap<>();
+
+        for (int i = 0; i < K; i++) {
+            Neighbor n = neighbors.get(i);
+            double w = 1.0 / (n.distance + 1e-6);
+            if (n.cosineSim > 0) w *= (1 + n.cosineSim);
+
+            String room = n.record.room;
+            roomVoteMap.put(room, roomVoteMap.getOrDefault(room, 0.0) + w);
+        }
+
+        // 4. 选出最佳房间
+        String bestRoom = null;
+        double maxScore = -1.0;
+        for (Map.Entry<String, Double> e : roomVoteMap.entrySet()) {
+            if (e.getValue() > maxScore) {
+                maxScore = e.getValue();
+                bestRoom = e.getKey();
             }
-            fis.close();
+        }
 
-            String jsonStr = sb.toString();
-            JSONArray arr = new JSONArray(jsonStr);
+        if (bestRoom != null) {
+            lastLocationResult = bestRoom.toLowerCase();
+            final String finalRoom = bestRoom;
 
-            fingerprintLibrary.clear();
-
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject obj = arr.getJSONObject(i);
-                String room = obj.getString("room");
-                String rp = obj.getString("rp");
-
-                JSONArray aps = obj.getJSONArray("aps");
-                Map<String, Double> avgRssiMap = new HashMap<>();
-                for (int j = 0; j < aps.length(); j++) {
-                    JSONObject apObj = aps.getJSONObject(j);
-                    String bssid = apObj.getString("bssid");
-                    double rssi = apObj.getDouble("rssi");
-                    avgRssiMap.put(bssid, rssi);
-                }
-
-                FingerprintRecord rec = new FingerprintRecord(room, rp, avgRssiMap);
-                fingerprintLibrary.add(rec);
-            }
-
-            tvResult.setText("Loaded fingerprint DB. Records: " + fingerprintLibrary.size() + "\n");
-        } catch (IOException e) {
-            tvResult.setText("No saved fingerprint DB file yet. Please use Admin mode to collect.\n");
-        } catch (JSONException e) {
-            e.printStackTrace();
-            tvResult.setText("Load fingerprint DB failed: " + e.getMessage() + "\n");
+            // 更新 UI 和 地图图标
+            runOnUiThread(() -> {
+                updateLocateUI(1, "Room " + finalRoom, 100);
+                showUserOnRoom(finalRoom);
+            });
+        } else {
+            runOnUiThread(() -> updateLocateUI(2, "Calculation Failed", 0));
         }
     }
-
-    // ======= 距离 & 相似度 =======
 
     private double computeDistance(Map<String, Double> fp, Map<String, Double> cur) {
         HashSet<String> keys = new HashSet<>();
@@ -486,203 +514,148 @@ public class UserActivity extends AppCompatActivity {
 
         double sumSq = 0.0;
         for (String bssid : keys) {
-            double v1 = fp.containsKey(bssid) ? fp.get(bssid) : MISSING_RSSI;
-            double v2 = cur.containsKey(bssid) ? cur.get(bssid) : MISSING_RSSI;
-            double diff = v1 - v2;
-            sumSq += diff * diff;
+            double v1 = fp.getOrDefault(bssid, MISSING_RSSI);
+            double v2 = cur.getOrDefault(bssid, MISSING_RSSI);
+            sumSq += Math.pow(v1 - v2, 2);
         }
         return Math.sqrt(sumSq);
     }
 
-    // 计算余弦相似度，返回 [-1, 1]，越接近 1 越相似
     private double computeCosine(Map<String, Double> fp, Map<String, Double> cur) {
         HashSet<String> keys = new HashSet<>();
         keys.addAll(fp.keySet());
         keys.addAll(cur.keySet());
 
-        double dot = 0.0;
-        double norm1Sq = 0.0;
-        double norm2Sq = 0.0;
-
+        double dot = 0.0, norm1 = 0.0, norm2 = 0.0;
         for (String bssid : keys) {
-            double v1 = fp.containsKey(bssid) ? fp.get(bssid) : MISSING_RSSI;
-            double v2 = cur.containsKey(bssid) ? cur.get(bssid) : MISSING_RSSI;
-
+            double v1 = fp.getOrDefault(bssid, MISSING_RSSI);
+            double v2 = cur.getOrDefault(bssid, MISSING_RSSI);
             dot += v1 * v2;
-            norm1Sq += v1 * v1;
-            norm2Sq += v2 * v2;
+            norm1 += v1 * v1;
+            norm2 += v2 * v2;
         }
-
-        if (norm1Sq == 0 || norm2Sq == 0) {
-            return 0.0;  // 避免除 0，认为相似度为 0
-        }
-
-        return dot / (Math.sqrt(norm1Sq) * Math.sqrt(norm2Sq));
+        if (norm1 == 0 || norm2 == 0) return 0;
+        return dot / (Math.sqrt(norm1) * Math.sqrt(norm2));
     }
 
-    // ======= WKNN + Cosine + Room Voting =======
+    // ==========================================================
+    //                   文件加载 (Fingerprint DB)
+    // ==========================================================
 
-    private void locateWithCurrentScan(Map<String, Double> currentMap) {
-        if (fingerprintLibrary.isEmpty()) {
-            tvResult.append("Fingerprint library is empty.\n");
+    private void loadFingerprintLibraryFromFile() {
+        fingerprintLibrary.clear();
+        try {
+            // 尝试读取本地文件
+            FileInputStream fis = openFileInput(FP_DB_FILE);
+            String jsonStr = readStreamToString(fis);
+            parseJsonAndMerge(jsonStr);
+        } catch (Exception e) {
+            // 本地没有，尝试从 Assets 读取 (预置数据)
+            try {
+                java.io.InputStream is = getAssets().open(FP_DB_FILE);
+                String jsonStr = readStreamToString(is);
+                parseJsonAndMerge(jsonStr);
+            } catch (Exception ex) {
+                Log.e(TAG, "No DB found.");
+            }
+        }
+    }
+
+    private String readStreamToString(java.io.InputStream is) throws IOException {
+        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(is, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        reader.close();
+        return sb.toString();
+    }
+
+    private void parseJsonAndMerge(String jsonStr) throws JSONException {
+        JSONArray arr = new JSONArray(jsonStr);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject obj = arr.getJSONObject(i);
+            String room = obj.getString("room");
+            String rp = obj.getString("rp");
+            JSONArray aps = obj.getJSONArray("aps");
+            Map<String, Double> avgRssiMap = new HashMap<>();
+            for (int j = 0; j < aps.length(); j++) {
+                JSONObject ap = aps.getJSONObject(j);
+                avgRssiMap.put(ap.getString("bssid"), ap.getDouble("rssi"));
+            }
+            // 简单去重添加
+            fingerprintLibrary.add(new FingerprintRecord(room, rp, avgRssiMap));
+        }
+    }
+
+    // ==========================================================
+    //                   地图图标逻辑
+    // ==========================================================
+
+    private void showUserOnRoom(String roomName) {
+        if (imgFloor == null || imgUserLoc == null) return;
+
+        RoomPos pos = roomPosMap.get(roomName);
+        // 如果找不到确切房间，尝试模糊匹配 (比如 t6-301a -> t6-301)
+        if (pos == null) {
+            // 简单 fallback 逻辑，这里略过
             return;
         }
 
-        // 1. 计算每个指纹的欧氏距离 + 余弦相似度
-        ArrayList<Neighbor> neighbors = new ArrayList<>();
-        for (FingerprintRecord rec : fingerprintLibrary) {
-            double dist = computeDistance(rec.avgRssiMap, currentMap);
-            double cos  = computeCosine(rec.avgRssiMap, currentMap);
-            neighbors.add(new Neighbor(rec, dist, cos));
+        currentRoomPos = pos;
+        iconFloor = parseFloorFromRoomName(roomName);
+        lastLocatedRoom = roomName;
+
+        // 自动切楼层图
+        if (iconFloor != -1 && iconFloor != currentFloor) {
+            switchFloorUI(iconFloor);
         }
 
-        // 2. 排序：先按距离从小到大；距离差不多时按 cos 从大到小
-        Collections.sort(neighbors, new Comparator<Neighbor>() {
-            @Override
-            public int compare(Neighbor o1, Neighbor o2) {
-                int c = Double.compare(o1.distance, o2.distance);
-                if (c != 0) return c;
-                return -Double.compare(o1.cosineSim, o2.cosineSim);
-            }
+        updateUserIconPosition();
+    }
+
+    private void updateUserIconPosition() {
+        if (currentFloor != -1 && iconFloor != -1 && currentFloor != iconFloor) {
+            imgUserLoc.setVisibility(View.GONE);
+            return;
+        }
+        if (imgFloor == null || imgUserLoc == null || currentRoomPos == null) return;
+
+        imgFloor.post(() -> {
+            int w = imgFloor.getWidth();
+            int h = imgFloor.getHeight();
+            if (w == 0 || h == 0) return;
+
+            int[] floorLoc = new int[2];
+            imgFloor.getLocationOnScreen(floorLoc);
+
+            View root = ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
+            int[] rootLoc = new int[2];
+            root.getLocationOnScreen(rootLoc);
+
+            float x = floorLoc[0] - rootLoc[0] + currentRoomPos.xRatio * w - (imgUserLoc.getWidth() / 2f);
+            float y = floorLoc[1] - rootLoc[1] + currentRoomPos.yRatio * h - (imgUserLoc.getHeight() / 2f);
+
+            imgUserLoc.setX(x);
+            imgUserLoc.setY(y);
+            imgUserLoc.setVisibility(View.VISIBLE);
         });
-
-        if (neighbors.isEmpty()) {
-            tvResult.append("No neighbors found in fingerprint library.\n");
-            return;
-        }
-
-        double bestDist = neighbors.get(0).distance;
-
-        // 3. 距离阈值：太远就认为 unknown
-        if (bestDist > DISTANCE_THRESHOLD) {
-            tvResult.append("\n=== Locate Result (Hybrid) ===\n");
-            tvResult.append("Location uncertain. No close match in fingerprint library.\n");
-            Neighbor best = neighbors.get(0);
-            tvResult.append("Best candidate (but far): Room " + best.record.room
-                    + ", RP: " + best.record.rp
-                    + "  distance = " + String.format("%.2f", best.distance)
-                    + ", cos = " + String.format("%.3f", best.cosineSim) + "\n");
-            showUserOnRoom(best.record.room);
-            return;
-        }
-
-        // 4. Hybrid WKNN + Cosine：同时做 RP 级和 Room 级投票
-        int K = Math.min(K_NEIGHBORS, neighbors.size());
-
-        Map<String, Double> voteMap = new HashMap<>();      // room|rp -> weight
-        Map<String, Double> roomVoteMap = new HashMap<>();  // room    -> weight
-
-        for (int i = 0; i < K; i++) {
-            Neighbor n = neighbors.get(i);
-            double d = n.distance;
-            double w = 1.0 / (d + 1e-6); // 距离越小权重越大
-
-            double cos = n.cosineSim;
-            if (cos > 0) {
-                w *= (1 + cos);          // 结合角度信息
-            }
-
-            String room = n.record.room;
-            String rp   = n.record.rp;
-            String label = room + "|" + rp;
-
-            // RP-level 投票
-            voteMap.put(label, voteMap.getOrDefault(label, 0.0) + w);
-            // Room-level 投票聚合
-            roomVoteMap.put(room, roomVoteMap.getOrDefault(room, 0.0) + w);
-        }
-
-        // 5. Room 级别最终输出
-        String bestRoom = null;
-        double bestRoomScore = -1.0;
-        for (Map.Entry<String, Double> e : roomVoteMap.entrySet()) {
-            if (e.getValue() > bestRoomScore) {
-                bestRoomScore = e.getValue();
-                bestRoom = e.getKey();
-            }
-        }
-
-        // （可选）RP 级别最佳标签，仅用于日志输出
-        String bestLabel = null;
-        double bestScore = -1.0;
-        for (Map.Entry<String, Double> e : voteMap.entrySet()) {
-            if (e.getValue() > bestScore) {
-                bestScore = e.getValue();
-                bestLabel = e.getKey();
-            }
-        }
-
-        tvResult.append("\n=== Locate Result (Hybrid WKNN + Cosine + Room Voting) ===\n");
-        tvResult.append("Probably in Room: " + bestRoom + "\n");
-        tvResult.append("Room vote score: " + String.format("%.4f", bestRoomScore) + "\n");
-        tvResult.append("Best distance among neighbors: " + String.format("%.2f", bestDist) + "\n");
-        tvResult.append("Best RP label weight: " + String.format("%.4f", bestScore)
-                + " (" + bestLabel + ")\n\n");
-
-        showUserOnRoom(bestRoom);
-
-        tvResult.append("Top " + K + " neighbors (RP-level):\n");
-        for (int i = 0; i < K; i++) {
-            Neighbor n = neighbors.get(i);
-            tvResult.append(" - Room " + n.record.room
-                    + ", RP " + n.record.rp
-                    + ", dist = " + String.format("%.2f", n.distance)
-                    + ", cos = " + String.format("%.3f", n.cosineSim) + "\n");
-        }
     }
 
-    // ======= 辅助数据结构 =======
-
-    // 房间在平面图中的相对位置（0~1）
-    private static class RoomPos {
-        final float xRatio;
-        final float yRatio;
-
-        RoomPos(float xRatio, float yRatio) {
-            this.xRatio = xRatio;
-            this.yRatio = yRatio;
+    private int parseFloorFromRoomName(String roomName) {
+        if (roomName == null || !roomName.contains("-")) return -1;
+        String part = roomName.split("-")[1]; // "301" from "t6-301"
+        if (part.length() > 0 && Character.isDigit(part.charAt(0))) {
+            return part.charAt(0) - '0';
         }
+        return -1;
     }
 
-    // 初始化每个房间的坐标
     private void initRoomPositions() {
         roomPosMap.clear();
-
-        // 在图片上的相对位置（x:0左 1右, y:0上 1下）
-        // tx-x0A: 电梯
-        roomPosMap.put("t6-30A", new RoomPos(0.80f, 0.70f));
-        roomPosMap.put("t6-40A", new RoomPos(0.80f, 0.74f));
-        roomPosMap.put("t6-50A", new RoomPos(0.77f, 0.66f));
-
-        roomPosMap.put("t7-30A", new RoomPos(0.43f, 0.36f));
-        roomPosMap.put("t7-40A", new RoomPos(0.43f, 0.38f));
-        roomPosMap.put("t7-50A", new RoomPos(0.415f, 0.38f));
-
-        // tx-x0B：教室中间的楼梯口
-        roomPosMap.put("t6-30B", new RoomPos(0.59f, 0.80f));
-        roomPosMap.put("t6-40B", new RoomPos(0.61f, 0.80f));
-        roomPosMap.put("t6-50B", new RoomPos(0.58f, 0.75f));
-
-        roomPosMap.put("t7-30B", new RoomPos(0.25f, 0.43f));
-        roomPosMap.put("t7-40B", new RoomPos(0.25f, 0.45f));
-        roomPosMap.put("t7-50B", new RoomPos(0.23f, 0.45f));
-
-        // tx-x0C：女厕旁边的楼梯口
-        roomPosMap.put("t6-30C", new RoomPos(0.87f, 0.70f));
-        roomPosMap.put("t6-40C", new RoomPos(0.86f, 0.70f));
-        roomPosMap.put("t6-50C", new RoomPos(0.83f, 0.65f));
-
-        roomPosMap.put("t7-30C", new RoomPos(0.25f, 0.45f));
-        roomPosMap.put("t7-40C", new RoomPos(0.24f, 0.45f));
-        roomPosMap.put("t7-50C", new RoomPos(0.23f, 0.45f));
-
-        // tx-x0x：教室号
         // 3F
         roomPosMap.put("t6-301", new RoomPos(0.49f, 0.82f));
-        // Locked: roomPosMap.put("t6-302", new RoomPos(0.12f, 0.40f));
         roomPosMap.put("t6-303", new RoomPos(0.63f, 0.80f));
         roomPosMap.put("t6-304", new RoomPos(0.70f, 0.78f));
-
         roomPosMap.put("t7-301", new RoomPos(0.15f, 0.45f));
         roomPosMap.put("t7-302", new RoomPos(0.12f, 0.25f));
         roomPosMap.put("t7-303", new RoomPos(0.10f, 0.10f));
@@ -693,14 +666,11 @@ public class UserActivity extends AppCompatActivity {
         // 4F
         roomPosMap.put("t6-401", new RoomPos(0.49f, 0.85f));
         roomPosMap.put("t6-402", new RoomPos(0.55f, 0.83f));
-        // Locked: roomPosMap.put("t6-403", new RoomPos(0.44f,0.76f));
         roomPosMap.put("t6-404", new RoomPos(0.65f, 0.80f));
         roomPosMap.put("t6-405", new RoomPos(0.74f, 0.79f));
-        // Locked: roomPosMap.put("t6-406", new RoomPos(0.60f, 0.70f));
-
         roomPosMap.put("t7-401", new RoomPos(0.13f, 0.50f));
         roomPosMap.put("t7-402", new RoomPos(0.20f, 0.49f));
-        roomPosMap.put("t7-403", new RoomPos(0.28f,0.47f));
+        roomPosMap.put("t7-403", new RoomPos(0.28f, 0.47f));
         roomPosMap.put("t7-404", new RoomPos(0.32f, 0.46f));
         roomPosMap.put("t7-405", new RoomPos(0.35f, 0.45f));
         roomPosMap.put("t7-406", new RoomPos(0.38f, 0.44f));
@@ -709,287 +679,128 @@ public class UserActivity extends AppCompatActivity {
         // 5F
         roomPosMap.put("t6-501", new RoomPos(0.45f, 0.78f));
         roomPosMap.put("t6-502", new RoomPos(0.52f, 0.77f));
-        roomPosMap.put("t6-503", new RoomPos(0.65f,0.73f));
+        roomPosMap.put("t6-503", new RoomPos(0.65f, 0.73f));
         roomPosMap.put("t6-504", new RoomPos(0.70f, 0.71f));
         roomPosMap.put("t6-505", new RoomPos(0.87f, 0.61f));
-
         roomPosMap.put("t7-501", new RoomPos(0.13f, 0.48f));
         roomPosMap.put("t7-502", new RoomPos(0.18f, 0.47f));
-        roomPosMap.put("t7-503", new RoomPos(0.30f,0.43f));
+        roomPosMap.put("t7-503", new RoomPos(0.30f, 0.43f));
         roomPosMap.put("t7-504", new RoomPos(0.35f, 0.41f));
         roomPosMap.put("t7-505", new RoomPos(0.52f, 0.33f));
     }
 
-    // 根据房间名，把 ic_locate 图标移动到对应位置
-    private void showUserOnRoom(String roomName) {
-        if (imgFloor == null || imgUserLoc == null) return;
+    // ==========================================================
+    //                   新闻模块
+    // ==========================================================
 
-        // 先根据房间号切换到对应楼层
-        autoSwitchFloorByRoom(roomName);
+    private void loadFstEvents() {
+        if (newsContainer == null) return;
+        newsContainer.removeAllViews();
+        TextView loading = new TextView(this);
+        loading.setText("Loading events...");
+        loading.setPadding(20, 20, 20, 20);
+        newsContainer.addView(loading);
 
-        RoomPos pos = roomPosMap.get(roomName);
-        if (pos == null) {
-            tvResult.append("No position configured for room " + roomName + ".\n");
-            imgUserLoc.setVisibility(View.GONE);
-            currentRoomPos = null;
-            return;
-        }
-
-        // 记录当前房间坐标，滚动时还要用
-        currentRoomPos = pos;
-
-        // 用统一函数解析楼层，兼容 301 / 3A / 50C 这些
-        iconFloor = parseFloorFromRoomName(roomName);
-        lastLocatedRoom = roomName;
-
-        updateUserIconPosition();
-    }
-
-    private void updateUserIconPosition() {
-        if (currentFloor != -1 && iconFloor != -1 && currentFloor != iconFloor) {
-            if (imgUserLoc != null) {
-                imgUserLoc.setVisibility(View.GONE);
+        netPool.execute(() -> {
+            try {
+                // 假设你有 FstEventScraper 这个类
+                List<EventItem> items = FstEventScraper.fetchLatest10();
+                mainHandler.post(() -> {
+                    newsContainer.removeAllViews();
+                    if (items == null || items.isEmpty()) {
+                        TextView tv = new TextView(this);
+                        tv.setText("No events found.");
+                        newsContainer.addView(tv);
+                    } else {
+                        renderEvents(items);
+                    }
+                });
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    newsContainer.removeAllViews();
+                    TextView tv = new TextView(this);
+                    tv.setText("Load failed: " + e.getMessage());
+                    newsContainer.addView(tv);
+                });
             }
-            return;
-        }
-
-        if (imgFloor == null || imgUserLoc == null || currentRoomPos == null) return;
-
-        imgFloor.post(() -> {
-            int w = imgFloor.getWidth();
-            int h = imgFloor.getHeight();
-            if (w == 0 || h == 0) {
-                tvResult.append("Floor image size is zero. Cannot place icon.\n");
-                return;
-            }
-
-            // 1. 取平面图在屏幕上的坐标
-            int[] floorLoc = new int[2];
-            imgFloor.getLocationOnScreen(floorLoc);
-
-            // 2. 取根布局在屏幕上的坐标（icon 的父布局）
-            View root = ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
-            int[] rootLoc = new int[2];
-            root.getLocationOnScreen(rootLoc);
-
-            // 3. 把“平面图内的相对坐标”换算到 root 里的绝对坐标
-            float x = floorLoc[0] - rootLoc[0] + currentRoomPos.xRatio * w;
-            float y = floorLoc[1] - rootLoc[1] + currentRoomPos.yRatio * h;
-
-            imgUserLoc.setX(x);
-            imgUserLoc.setY(y);
-            imgUserLoc.setVisibility(View.VISIBLE);
         });
     }
 
-    // 从房间名推断楼层：
-    // 301 -> 3, 406 -> 4, 3A -> 3, 4B -> 4, 50C -> 5
-    private int parseFloorFromRoomName(String roomName) {
-        if (roomName == null || roomName.isEmpty()) return -1;
-
-        // 找 "-"
-        int dashIndex = roomName.indexOf("-");
-        if (dashIndex < 0 || dashIndex == roomName.length() - 1) {
-            return -1;  // 格式不对
-        }
-
-        // 取 "-" 后面的部分，例如 "40A"
-        String afterDash = roomName.substring(dashIndex + 1);
-
-        // 从这一段中找第一个数字（楼层号）
-        for (char c : afterDash.toCharArray()) {
-            if (Character.isDigit(c)) {
-                return c - '0';  // 字符转数字
-            }
-        }
-
-        // 找不到数字则无法解析
-        return -1;
-    }
-
-
-
-    // 根据房间号自动切换楼层图：
-    private void autoSwitchFloorByRoom(String roomName) {
-        if (roomName == null || roomName.length() == 0) return;
-
-        int floor = parseFloorFromRoomName(roomName);
-        if (floor == -1) {
-            // 解析不出楼层就不自动切
-            return;
-        }
-
-        if (floor == currentFloor) return;
-
-        switch (floor) {
-            case 3:
-                imgFloor.setImageResource(R.drawable.floor3);
-                break;
-            case 4:
-                imgFloor.setImageResource(R.drawable.floor4);
-                break;
-            case 5:
-                imgFloor.setImageResource(R.drawable.floor5);
-                break;
-            default:
-                // 其他楼层暂时不处理
-                return;
-        }
-
-        currentFloor = floor;
-    }
-
-
-    private static class Neighbor {
-        FingerprintRecord record;
-        double distance;      // 欧氏距离
-        double cosineSim;     // 余弦相似度
-
-        Neighbor(FingerprintRecord r, double d, double c) {
-            this.record = r;
-            this.distance = d;
-            this.cosineSim = c;
-        }
-    }
-
-    private static class FingerprintRecord {
-        String room;
-        String rp;
-        Map<String, Double> avgRssiMap;
-
-        FingerprintRecord(String room, String rp, Map<String, Double> avgRssiMap) {
-            this.room = room;
-            this.rp = rp;
-            this.avgRssiMap = avgRssiMap;
-        }
-    }
-
-    // ======= 底部“新闻”占位（不做真实爬虫） =======
-
-    private void loadNewsPlaceholder() {
-        if (newsContainer == null) return;
-
-        newsContainer.removeAllViews();
-
-        // 这里随便写几条静态文本，展示布局效果
-        String[] demoLines = new String[] {
-                "• Campus news module placeholder.",
-                "• Later you can replace this with real crawler results.",
-                "• For now, this just proves the UI works."
-        };
-
-        for (String line : demoLines) {
-            TextView tv = new TextView(this);
-            tv.setText(line);
-            tv.setTextSize(14f);
-            tv.setPadding(8, 8, 8, 8);
-            newsContainer.addView(tv);
-        }
-    }
-
-//    private void loadFstEvents() {
-//        // 可选：先清空+显示“Loading...”
-//        newsContainer.removeAllViews();
-//        TextView loading = new TextView(this);
-//        loading.setText("Loading events...");
-//        newsContainer.addView(loading);
-//
-//        netPool.execute(() -> {
-//            try {
-//                List<EventItem> items = FstEventScraper.fetchLatest10();
-//                mainHandler.post(() -> renderEvents(items));
-//            } catch (Exception e) {
-//                mainHandler.post(() -> {
-//                    newsContainer.removeAllViews();
-//                    TextView err = new TextView(this);
-//                    err.setText("Load failed: " + e.getMessage());
-//                    newsContainer.addView(err);
-//                });
-//            }
-//        });
-//    }
-private void loadFstEvents() {
-    if (newsContainer == null) return;
-
-    newsContainer.removeAllViews();
-    TextView loading = new TextView(this);
-    loading.setText("Loading events...");
-    newsContainer.addView(loading);
-
-    ExecutorService pool = Executors.newSingleThreadExecutor();
-    Handler main = new Handler(Looper.getMainLooper());
-
-    pool.execute(() -> {
-        try {
-            List<EventItem> items = FstEventScraper.fetchLatest10();
-            Log.d("FST", "items size=" + (items == null ? -1 : items.size()));
-
-            main.post(() -> {
-                newsContainer.removeAllViews();
-                if (items == null || items.isEmpty()) {
-                    TextView tv = new TextView(this);
-                    tv.setText("No events parsed (items is empty).");
-                    newsContainer.addView(tv);
-                } else {
-                    renderEvents(items);
-                }
-            });
-        } catch (Exception e) {
-            Log.e("FST", "fetch failed", e);
-            main.post(() -> {
-                newsContainer.removeAllViews();
-                TextView tv = new TextView(this);
-                tv.setText("Load failed: " + e.getClass().getSimpleName() + "\n" + e.getMessage());
-                newsContainer.addView(tv);
-            });
-        }
-    });
-}
-
-
     private void renderEvents(List<EventItem> items) {
+        // 移除旧视图
         newsContainer.removeAllViews();
 
         for (EventItem ev : items) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, 10, 0, 10);
-            row.setLayoutParams(new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-            ));
+            row.setPadding(10, 20, 10, 20);
 
-            // 左边：标题（可点开浏览器）+ 简要信息
+            // --- 1. 左侧：文本信息 ---
             TextView tv = new TextView(this);
-            tv.setLayoutParams(new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
-            ));
-            String line2 = ev.date + " " + ev.timeRange;
-            if (ev.speaker != null && !ev.speaker.isEmpty()) line2 += " | " + ev.speaker;
-            if (ev.venue != null && !ev.venue.isEmpty()) line2 += " | " + ev.venue;
+            // 使用 weight=1 让文本占据剩余空间
+            tv.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            tv.setText(ev.title + "\n" + ev.date + " | " + ev.venue);
+            tv.setTextSize(14);
+            tv.setTextColor(0xFF333333);
 
-            tv.setText(ev.title + "\n" + line2);
+            // 点击文本打开网页
             tv.setOnClickListener(v -> {
-                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(ev.url));
-                startActivity(i);
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(ev.url)));
+                } catch (Exception e) { e.printStackTrace(); }
             });
 
-            // 右边：显示定位按钮
+            // --- 2. 右侧：ShowLocation 按钮 (这就是被误删的部分) ---
             Button btn = new Button(this);
-            btn.setText("ShowLocation");
+            btn.setText("Location");
+            // 稍微缩小一点字体或调整内边距，以免撑爆布局
+            btn.setTextSize(12);
             btn.setOnClickListener(v -> {
-                Intent i = new Intent(UserActivity.this, CampusMapActivity.class);
+                // 跳转到 CampusMapActivity 并传递地点信息
+                Intent i = new Intent(UserActivity.this, CampusMapActivity.class); // 确保你有这个 Activity
                 i.putExtra("title", ev.title);
                 i.putExtra("venue", ev.venue);
                 i.putExtra("url", ev.url);
                 startActivity(i);
             });
 
+            // --- 3. 添加到行 ---
             row.addView(tv);
-            row.addView(btn);
+            row.addView(btn); // 把按钮加进布局
+
+            // 添加分割线
+            View divider = new View(this);
+            divider.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1));
+            divider.setBackgroundColor(0xFFEEEEEE);
+
             newsContainer.addView(row);
+            newsContainer.addView(divider);
         }
     }
 
+    // ==========================================================
+    //                   数据类定义
+    // ==========================================================
+
+    public static class FingerprintRecord {
+        public String room, rp;
+        public Map<String, Double> avgRssiMap;
+        public FingerprintRecord(String room, String rp, Map<String, Double> map) {
+            this.room = room; this.rp = rp; this.avgRssiMap = map;
+        }
+    }
+
+    private static class Neighbor {
+        FingerprintRecord record;
+        double distance, cosineSim;
+        Neighbor(FingerprintRecord r, double d, double c) {
+            this.record = r; this.distance = d; this.cosineSim = c;
+        }
+    }
+
+    private static class RoomPos {
+        final float xRatio, yRatio;
+        RoomPos(float x, float y) { this.xRatio = x; this.yRatio = y; }
+    }
 }

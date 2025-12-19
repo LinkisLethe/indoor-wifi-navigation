@@ -489,98 +489,99 @@ public class AdminActivity extends AppCompatActivity {
     }
 
     // 正常「显式加载」DB（会清空当前 library）
+    // Load DB: Assets (Factory) + Local (New) -> Merge
     private void loadFingerprintLibraryFromFile() {
+        fingerprintLibrary.clear();
+        int countAssets = 0;
+        int countLocal = 0;
+
+        // 1. Try load from Assets (Old phone data)
+        try {
+            java.io.InputStream is = getAssets().open(FP_DB_FILE);
+            String jsonStr = readStreamToString(is);
+            countAssets = parseJsonAndMerge(jsonStr); // Helper method
+        } catch (IOException e) {
+            // No assets file, normal.
+        } catch (JSONException e) {
+            Log.e(TAG, "Error parsing assets JSON: " + e.getMessage());
+        }
+
+        // 2. Try load from Local Storage (New collected data)
         try {
             FileInputStream fis = openFileInput(FP_DB_FILE);
-            StringBuilder sb = new StringBuilder();
-            byte[] buf = new byte[1024];
-            int len;
-            while ((len = fis.read(buf)) != -1) {
-                sb.append(new String(buf, 0, len, StandardCharsets.UTF_8));
-            }
-            fis.close();
-
-            String jsonStr = sb.toString();
-            JSONArray arr = new JSONArray(jsonStr);
-
-            fingerprintLibrary.clear();
-
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject obj = arr.getJSONObject(i);
-                String room = obj.getString("room");
-                String rp = obj.getString("rp");
-
-                JSONArray aps = obj.getJSONArray("aps");
-                Map<String, Double> avgRssiMap = new HashMap<>();
-                for (int j = 0; j < aps.length(); j++) {
-                    JSONObject apObj = aps.getJSONObject(j);
-                    String bssid = apObj.getString("bssid");
-                    double rssi = apObj.getDouble("rssi");
-                    avgRssiMap.put(bssid, rssi);
-                }
-
-                FingerprintRecord rec = new FingerprintRecord(room, rp, avgRssiMap);
-                fingerprintLibrary.add(rec);
-            }
-
-            Toast.makeText(this, "Loaded from file. Records: " + fingerprintLibrary.size(),
-                    Toast.LENGTH_SHORT).show();
+            String jsonStr = readStreamToString(fis);
+            countLocal = parseJsonAndMerge(jsonStr); // Helper method
         } catch (IOException e) {
-            Toast.makeText(this, "No saved DB file yet.", Toast.LENGTH_SHORT).show();
+            // No local file yet, normal.
         } catch (JSONException e) {
-            e.printStackTrace();
-            Toast.makeText(this, "Load failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Log.e(TAG, "Error parsing local JSON: " + e.getMessage());
         }
+
+        int total = fingerprintLibrary.size();
+        Toast.makeText(this, "Loaded DB. Total: " + total + "\n(From Assets: " + countAssets + ", Local merged: " + countLocal + ")", Toast.LENGTH_LONG).show();
     }
 
     // 静默 merge：不会清空当前 library，不弹 Toast，
     // 用于启动 / 保存前先把旧 DB 合并进来，避免覆盖历史数据
+    // Silent load for merging before save
     private void loadFingerprintLibraryFromFileSilently() {
+        // Note: In this logic, we append to existing memory list,
+        // or you can choose to reload everything to be safe.
+        // Here we choose to reload fresh to avoid duplicates.
+        fingerprintLibrary.clear();
+
+        try {
+            java.io.InputStream is = getAssets().open(FP_DB_FILE);
+            parseJsonAndMerge(readStreamToString(is));
+        } catch (Exception e) { /* Ignore */ }
+
         try {
             FileInputStream fis = openFileInput(FP_DB_FILE);
-            StringBuilder sb = new StringBuilder();
-            byte[] buf = new byte[1024];
-            int len;
-            while ((len = fis.read(buf)) != -1) {
-                sb.append(new String(buf, 0, len, StandardCharsets.UTF_8));
-            }
-            fis.close();
-
-            String jsonStr = sb.toString();
-            JSONArray arr = new JSONArray(jsonStr);
-
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject obj = arr.getJSONObject(i);
-                String room = obj.getString("room");
-                String rp   = obj.getString("rp");
-
-                JSONArray aps = obj.getJSONArray("aps");
-                Map<String, Double> avgRssiMap = new HashMap<>();
-                for (int j = 0; j < aps.length(); j++) {
-                    JSONObject apObj = aps.getJSONObject(j);
-                    String bssid = apObj.getString("bssid");
-                    double rssi = apObj.getDouble("rssi");
-                    avgRssiMap.put(bssid, rssi);
-                }
-
-                // 不覆盖内存中已有的同名 room+rp，只补充还没有的
-                boolean exists = false;
-                for (FingerprintRecord r : fingerprintLibrary) {
-                    if (r.room.equals(room) && r.rp.equals(rp)) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    fingerprintLibrary.add(new FingerprintRecord(room, rp, avgRssiMap));
-                }
-            }
-
-        } catch (IOException | JSONException e) {
-            // 静默：文件不存在也没关系，第一次运行会走这里
-        }
+            parseJsonAndMerge(readStreamToString(fis));
+        } catch (Exception e) { /* Ignore */ }
     }
+    // Parse JSON string and merge into fingerprintLibrary
+// Returns the number of records added/updated from this string
+    private int parseJsonAndMerge(String jsonStr) throws JSONException {
+        JSONArray arr = new JSONArray(jsonStr);
+        int count = 0;
 
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject obj = arr.getJSONObject(i);
+            String room = obj.getString("room");
+            String rp = obj.getString("rp");
+
+            JSONArray aps = obj.getJSONArray("aps");
+            Map<String, Double> avgRssiMap = new HashMap<>();
+            for (int j = 0; j < aps.length(); j++) {
+                JSONObject apObj = aps.getJSONObject(j);
+                String bssid = apObj.getString("bssid");
+                double rssi = apObj.getDouble("rssi");
+                avgRssiMap.put(bssid, rssi);
+            }
+
+            // Check for duplicates in memory
+            int existingIndex = -1;
+            for (int k = 0; k < fingerprintLibrary.size(); k++) {
+                FingerprintRecord r = fingerprintLibrary.get(k);
+                if (r.room.equals(room) && r.rp.equals(rp)) {
+                    existingIndex = k;
+                    break;
+                }
+            }
+
+            FingerprintRecord newRecord = new FingerprintRecord(room, rp, avgRssiMap);
+            if (existingIndex >= 0) {
+                // Update existing (Local overrides Assets usually, or simple overwrite)
+                fingerprintLibrary.set(existingIndex, newRecord);
+            } else {
+                // Add new
+                fingerprintLibrary.add(newRecord);
+            }
+            count++;
+        }
+        return count;
+    }
     // 显示指纹库概要 & 下方 CheckBox 列表
     private void showFingerprintLibrary() {
         rpListContainer.removeAllViews();
@@ -660,5 +661,18 @@ public class AdminActivity extends AppCompatActivity {
             }
         }
         return super.dispatchTouchEvent(ev);
+    }
+    // ==========================================================
+// Helper: Read InputStream to String (Add this to both Activities)
+// ==========================================================
+    private String readStreamToString(java.io.InputStream is) throws IOException {
+        java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(is, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            sb.append(line);
+        }
+        reader.close();
+        return sb.toString();
     }
 }

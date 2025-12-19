@@ -1,398 +1,458 @@
 package com.example.fingerprintlocation;
 
+import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.graphics.PointF;
+import android.net.wifi.ScanResult;
+import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
-import android.widget.Button;
+import android.os.Handler;
+import android.util.Log;
+import android.view.View;
+import android.view.animation.DecelerateInterpolator;
+import android.view.inputmethod.EditorInfo;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import java.util.List;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
 import java.util.ArrayList;
-import java.util.Map;
 import java.util.HashMap;
-import java.io.InputStream;
-import org.json.JSONArray;
-import org.json.JSONObject;
-import android.util.Log;
-import android.widget.EditText;
-import android.graphics.PointF;
-
-
+import java.util.List;
+import java.util.Map;
 
 public class NavigationActivity extends AppCompatActivity {
 
-    // 顶部 Tab
-    private Button btnTabLocate;
-    private Button btnTabNavigate;
-
-    // 楼层按钮
-    private Button btnFloor3;
-    private Button btnFloor4;
-    private Button btnFloor5;
-
-    // 地图 & 信息
-    private ImageView imgFloorMap;
-    private ImageView imgLocationPin;   // 以后用来显示定位点
-    private TextView tvInfo;            // 底部“定位信息…”
-
-    // 用于存储路径节点
-    private List<String> path = new ArrayList<>();
-    private Map<String, List<String>> floorRooms = new HashMap<>();
-
-    private List<String> stairsNodes = new ArrayList<>();
-
-    // 成员变量
+    // UI Controls
+    private View btnTabLocate, btnTabNavigate;
+    private View btnFloor3, btnFloor4, btnFloor5;
+    private ImageView imgFloorMap, imgLocationPin;
+    private TextView tvInfo;
     private EditText etStartRoom, etEndRoom;
-    private Button btnConfirm;
-
+    private View btnConfirm;
     private LineView pathOverlay;
 
-    private Map<String, PointF> nodeCoords3F = new HashMap<>();
-    private Map<String, PointF> nodeCoords4F = new HashMap<>();
-    private Map<String, PointF> nodeCoords5F = new HashMap<>();
+    // State Variables
+    private int currentDisplayFloor = 3;
+    private List<MapData.Node> currentWholePath = new ArrayList<>();
 
+    // PDR Variables
+    private PdrManager pdrManager;
+    private boolean isNavigating = false;
+    private float currentUserX = 0f;
+    private float currentUserY = 0f;
+    private int currentUserFloor = 3;
 
+    // 性能优化：缓存地图原图尺寸
+    private float mapRawWidth = 0f;
+    private float mapRawHeight = 0f;
 
+    private static final double MAP_NORTH_OFFSET = Math.toRadians(-13);
 
+    // WiFi Variables
+    private WifiManager wifiManager;
+    private Handler wifiHandler = new Handler();
+    private boolean isScanningLoopRunning = false;
+    private static final int SCAN_INTERVAL = 3000;
 
+    private final BroadcastReceiver wifiScanReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean success = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false);
+            if (success) {
+                if (ActivityCompat.checkSelfPermission(NavigationActivity.this, Manifest.permission.ACCESS_FINE_LOCATION)
+                        != PackageManager.PERMISSION_GRANTED) return;
+
+                List<ScanResult> results = wifiManager.getScanResults();
+                new Thread(() -> {
+                    String bestRoom = computeBestRoom(results);
+                    if (bestRoom != null) {
+                        runOnUiThread(() -> correctPositionByWifi(bestRoom));
+                    }
+                }).start();
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        loadFingerprintData();
-
-
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_navigation);
 
-        initNodeCoords();
+        initViews();
+        initListeners();
+        checkSensorPermission();
+        MapData.initNodes();
 
+        // PDR 初始化
+        pdrManager = new PdrManager(this, (stepLength, azimuth) -> updateUserPosition(stepLength, azimuth));
+        wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
 
-        // === 1. 绑定控件 ===
-        btnTabLocate    = findViewById(R.id.btnTabLocate);
-        btnTabNavigate  = findViewById(R.id.btnTabNavigate);
+        // 初始化默认楼层尺寸
+        switchFloor(3);
+    }
 
-        btnFloor3       = findViewById(R.id.btn_floor3);
-        btnFloor4       = findViewById(R.id.btn_floor4);
-        btnFloor5       = findViewById(R.id.btn_floor5);
-
-        imgFloorMap     = findViewById(R.id.img_floor_map);
-        imgLocationPin  = findViewById(R.id.img_location_pin);
-        tvInfo          = findViewById(R.id.layout_info);
-
+    private void initViews() {
+        btnTabLocate = findViewById(R.id.btnTabLocate);
+        btnTabNavigate = findViewById(R.id.btnTabNavigate);
+        btnFloor3 = findViewById(R.id.btn_floor3);
+        btnFloor4 = findViewById(R.id.btn_floor4);
+        btnFloor5 = findViewById(R.id.btn_floor5);
+        imgFloorMap = findViewById(R.id.img_floor_map);
+        imgLocationPin = findViewById(R.id.img_location_pin);
+        tvInfo = findViewById(R.id.layout_info);
         etStartRoom = findViewById(R.id.et_start_room);
-        etEndRoom   = findViewById(R.id.et_end_room);
-        btnConfirm  = findViewById(R.id.btn_confirm);
-
+        etEndRoom = findViewById(R.id.et_end_room);
+        btnConfirm = findViewById(R.id.btn_confirm);
         pathOverlay = findViewById(R.id.path_overlay);
 
-        btnConfirm.setOnClickListener(v -> {
-            String start = etStartRoom.getText().toString().trim();
-            String end   = etEndRoom.getText().toString().trim();
+        if (UserActivity.lastLocationResult != null && !UserActivity.lastLocationResult.isEmpty()) {
+            etStartRoom.setText(UserActivity.lastLocationResult);
+            etEndRoom.requestFocus();
+        }
+    }
 
-            if (start.isEmpty() || end.isEmpty()) {
-                tvInfo.setText("请先输入起点和终点房间号");
-                return;
-            }
-
-            // 使用真正的路径规划逻辑（你已经有 computePath）
-            List<String> path = computePath(start, end);
-            tvInfo.setText("规划路径: " + path.toString());
-
-            // 当前先假设画“起点所在楼层”的路径
-            String startFloor = getFloorFromRoom(start);
-
-            // 切换地图到起点楼层（保证图片和线是同一层）
-            if (startFloor.equals("3F")) {
-                imgFloorMap.setImageResource(R.drawable.floor3);
-                highlightFloorButton(3);
-            } else if (startFloor.equals("4F")) {
-                imgFloorMap.setImageResource(R.drawable.floor4);
-                highlightFloorButton(4);
-            } else if (startFloor.equals("5F")) {
-                imgFloorMap.setImageResource(R.drawable.floor5);
-                highlightFloorButton(5);
-            }
-
-            // 构造这一层上的折线路径坐标
-            List<PointF> pts = buildPathPointsForFloor(path, startFloor);
-            pathOverlay.setPathPoints(pts);
-        });
-
-
-
-
-
-        // === 2. 顶部 Tab 的点击事件 ===
-
-        // 当前页面是 Navigation，所以 Navigation 按钮不需要跳转
-        btnTabNavigate.setOnClickListener(v -> {
-            // 可以什么都不做，或者给个 Toast 提示“已经在 Navigation 页面”
-            // Toast.makeText(this, "Already in Navigation", Toast.LENGTH_SHORT).show();
-        });
-
-        // 点击 Relocate 回到 UserActivity
+    private void initListeners() {
         btnTabLocate.setOnClickListener(v -> {
-            Intent intent = new Intent(NavigationActivity.this, UserActivity.class);
-            // 防止堆太多 Activity，可选：
-            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            startActivity(intent);
-            finish();   // 关闭当前 NavigationActivity
+            startActivity(new Intent(this, UserActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP));
+            finish();
         });
 
-        // === 3. 楼层按钮的点击事件（切换图片） ===
+        btnFloor3.setOnClickListener(v -> switchFloor(3));
+        btnFloor4.setOnClickListener(v -> switchFloor(4));
+        btnFloor5.setOnClickListener(v -> switchFloor(5));
 
-        btnFloor3.setOnClickListener(v -> {
-            imgFloorMap.setImageResource(R.drawable.floor3);
-            tvInfo.setText("当前楼层：3F");
-            highlightFloorButton(3);
-        });
+        // 只要输入框内容变了，就尝试预览 (真正实现输入即显示)
+        android.text.TextWatcher watcher = new android.text.TextWatcher() {
+            @Override public void afterTextChanged(android.text.Editable s) { previewPath(); }
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+        };
+        etStartRoom.addTextChangedListener(watcher);
+        etEndRoom.addTextChangedListener(watcher);
 
-        btnFloor4.setOnClickListener(v -> {
-            imgFloorMap.setImageResource(R.drawable.floor4);
-            tvInfo.setText("当前楼层：4F");
-            highlightFloorButton(4);
-        });
-
-        btnFloor5.setOnClickListener(v -> {
-            imgFloorMap.setImageResource(R.drawable.floor5);
-            tvInfo.setText("当前楼层：5F");
-            highlightFloorButton(5);
-        });
-
-        // 默认显示 3F
-        highlightFloorButton(3);
-
-    }
-
-    /**
-     * 简单高亮当前选择的楼层按钮（可选，不想要可以删除这个方法和调用）
-     */
-    private void highlightFloorButton(int floor) {
-        int selectedColor   = getResources().getColor(android.R.color.holo_purple);
-        int normalColor     = getResources().getColor(android.R.color.darker_gray);
-
-        // 文字颜色统一白色
-        btnFloor3.setTextColor(getResources().getColor(android.R.color.white));
-        btnFloor4.setTextColor(getResources().getColor(android.R.color.white));
-        btnFloor5.setTextColor(getResources().getColor(android.R.color.white));
-
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            btnFloor3.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
-                    floor == 3 ? selectedColor : normalColor));
-            btnFloor4.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
-                    floor == 4 ? selectedColor : normalColor));
-            btnFloor5.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
-                    floor == 5 ? selectedColor : normalColor));
-        }
-    }
-
-//    // TODO: 这里的坐标是示例值，你要根据 floor3/floor4/floor5 图片自己改成真实像素坐标
-// TODO: 这些坐标是你要自己根据 floor3/floor4/floor5 图片调出来的像素位置
-private void initNodeCoords() {
-    // ===== 3F 示例 =====
-    // 比如 3F 图片里：302 在左边，303 在右边，楼梯在右下角
-    nodeCoords3F.put("302", new PointF(200, 400));
-    nodeCoords3F.put("303", new PointF(350, 400));
-    nodeCoords3F.put("A",   new PointF(180, 300));
-    nodeCoords3F.put("B",   new PointF(260, 300));
-    nodeCoords3F.put("C",   new PointF(340, 300));
-    nodeCoords3F.put("stairs_3F", new PointF(500, 500));
-
-    // ===== 4F 示例 =====
-    nodeCoords4F.put("402", new PointF(210, 380));
-    nodeCoords4F.put("403", new PointF(360, 380));
-    nodeCoords4F.put("A",   new PointF(190, 290));
-    nodeCoords4F.put("B",   new PointF(270, 290));
-    nodeCoords4F.put("C",   new PointF(350, 290));
-    nodeCoords4F.put("stairs_4F", new PointF(500, 500));
-
-    // ===== 5F 示例 =====
-    nodeCoords5F.put("502", new PointF(220, 360));
-    nodeCoords5F.put("503", new PointF(370, 360));
-    nodeCoords5F.put("A",   new PointF(200, 280));
-    nodeCoords5F.put("B",   new PointF(280, 280));
-    nodeCoords5F.put("C",   new PointF(360, 280));
-    nodeCoords5F.put("stairs_5F", new PointF(500, 500));
-}
-
-
-
-    // 读取每层楼有几个位置
-    // 读取每层楼有哪些房间（只按 room 的首位分层）
-    private void loadFingerprintData() {
-        floorRooms.put("3F", new ArrayList<>());
-        floorRooms.put("4F", new ArrayList<>());
-        floorRooms.put("5F", new ArrayList<>());
-
-        try {
-            InputStream is = getAssets().open("fingerprint_db.json");
-            byte[] buffer = new byte[is.available()];
-            is.read(buffer);
-            is.close();
-            String jsonString = new String(buffer, "UTF-8");
-
-            JSONArray arr = new JSONArray(jsonString);
-
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject obj = arr.getJSONObject(i);
-
-                // JSON 里实际存在的字段只有 room / rp / aps
-                String room = obj.getString("room");
-
-                if (room.startsWith("3")) {
-                    if (!floorRooms.get("3F").contains(room)) {
-                        floorRooms.get("3F").add(room);
-                    }
-                } else if (room.startsWith("4")) {
-                    if (!floorRooms.get("4F").contains(room)) {
-                        floorRooms.get("4F").add(room);
-                    }
-                } else if (room.startsWith("5")) {
-                    if (!floorRooms.get("5F").contains(room)) {
-                        floorRooms.get("5F").add(room);
-                    }
-                }
-            }
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-
-        // 打印一下（方便你在 Logcat 看每层有哪些房间）
-        Log.d("NAV", "楼层教室列表:");
-        for (String floor : floorRooms.keySet()) {
-            Log.d("NAV", floor + ": " + floorRooms.get(floor).toString());
-        }
-    }
-
-
-    // 根据房间号推断楼层标签
-    private String getFloorFromRoom(String room) {
-        if (room == null || room.length() == 0) return "UNKNOWN";
-
-        // 这里先简单按房间号首位判断
-        // 比如 301、3A1 -> 3F； 403 -> 4F； 501 -> 5F
-        char c = room.charAt(0);
-        if (c == '3') return "3F";
-        if (c == '4') return "4F";
-        if (c == '5') return "5F";
-
-        // 如果命名比较特殊，你以后可以自己改这一段逻辑
-        return "UNKNOWN";
-    }
-
-    // 根据起点和终点房间号，生成一条简单的导航路径
-    private List<String> computePath(String start, String end) {
-        List<String> result = new ArrayList<>();
-
-        String startFloor = getFloorFromRoom(start);
-        String endFloor   = getFloorFromRoom(end);
-
-        // 起点一定要先放进去
-        result.add(start);
-
-        // 1. 同一楼层：直接从起点到终点（后面你可以加 ABC、走廊点位等）
-        if (startFloor.equals(endFloor)) {
-            result.add(end);
-            return result;
-        }
-
-        // 2. 不同楼层：中间要经过楼梯节点
-        // 我们用 stairs_3F / stairs_4F / stairs_5F 表示每层的楼梯位置
-
-        String startStairs = "stairs_" + startFloor;  // 比如 stairs_3F
-        String endStairs   = "stairs_" + endFloor;    // 比如 stairs_5F
-
-        // 情况 1：3F <-> 4F
-        // 比如 3F -> 4F: start -> stairs_3F -> stairs_4F -> end
-        if ((startFloor.equals("3F") && endFloor.equals("4F"))
-                || (startFloor.equals("4F") && endFloor.equals("3F"))) {
-
-            result.add(startStairs);
-            result.add(endStairs);
-            result.add(end);
-            return result;
-        }
-
-        // 情况 2：4F <-> 5F
-        if ((startFloor.equals("4F") && endFloor.equals("5F"))
-                || (startFloor.equals("5F") && endFloor.equals("4F"))) {
-
-            result.add(startStairs);
-            result.add(endStairs);
-            result.add(end);
-            return result;
-        }
-
-        // 情况 3：3F <-> 5F，需要经过 4F 楼梯
-        // 例如 3F -> 5F: start -> stairs_3F -> stairs_4F -> stairs_5F -> end
-        if ((startFloor.equals("3F") && endFloor.equals("5F"))
-                || (startFloor.equals("5F") && endFloor.equals("3F"))) {
-
-            result.add("stairs_3F");
-            result.add("stairs_4F");
-            result.add("stairs_5F");
-            result.add(end);
-            return result;
-        }
-
-        // 其它情况先简单处理
-        result.add(end);
-        return result;
-    }
-
-
-
-    private void drawPathOnMap(List<String> path) {
-        // 通过路径绘制蓝色线条
-        // 这里可以使用 Canvas 进行绘制
-    }
-
-    private void updatePathDistance() {
-        // 根据当前定位更新路径长度
-        // 将路径根据距离变化调整，显示在地图上
-    }
-
-    private List<PointF> buildPathPointsForFloor(List<String> path, String floor) {
-        List<PointF> pts = new ArrayList<>();
-
-        Map<String, PointF> coordMap;
-        switch (floor) {
-            case "3F":
-                coordMap = nodeCoords3F;
-                break;
-            case "4F":
-                coordMap = nodeCoords4F;
-                break;
-            case "5F":
-                coordMap = nodeCoords5F;
-                break;
-            default:
-                coordMap = new HashMap<>();
-        }
-
-        for (String node : path) {
-            // 只画属于这一层的节点 + 本层的楼梯
-            if (node.startsWith("stairs_")) {
-                // 楼梯只画本层对应的那个
-                String stairsName = "stairs_" + floor;
-                PointF p = coordMap.get(stairsName);
-                if (p != null && !pts.contains(p)) {
-                    pts.add(p);
-                }
+        // 点击 GO 的时候，如果没路径则报错，有路径则启动
+        btnConfirm.setOnClickListener(v -> {
+            previewPath(); // 确保万无一失再启动
+            if (currentWholePath == null || currentWholePath.isEmpty()) {
+                Toast.makeText(this, "Please enter valid rooms first", Toast.LENGTH_SHORT).show();
             } else {
-                PointF p = coordMap.get(node);
-                if (p != null) {
-                    pts.add(p);
+                startNavigation();
+            }
+        });
+    }
+
+    private void previewPath() {
+        String start = etStartRoom.getText().toString().trim();
+        String end = etEndRoom.getText().toString().trim();
+        if (start.isEmpty() || end.isEmpty()) return;
+
+        MapData.Node startNode = MapData.getNearestDoor(start);
+        MapData.Node endNode = MapData.getNearestDoor(end);
+
+        if (startNode != null && endNode != null) {
+            List<MapData.Node> path = PathFinder.findPath(startNode.id, endNode.id);
+            if (!path.isEmpty()) {
+                currentWholePath = path;
+                switchFloor(startNode.floor);
+                drawPathForCurrentFloor();
+                generateNavigationText(path);
+            }
+        }
+    }
+
+    private void startNavigation() {
+        if (currentWholePath == null || currentWholePath.isEmpty()) previewPath();
+        if (currentWholePath == null || currentWholePath.isEmpty()) {
+            Toast.makeText(this, "Please check room numbers", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        MapData.Node startNode = currentWholePath.get(0);
+        currentUserX = startNode.x;
+        currentUserY = startNode.y;
+        currentUserFloor = startNode.floor;
+
+        isNavigating = true;
+        pdrManager.start();
+        startWifiScanLoop();
+
+        switchFloor(currentUserFloor);
+        updatePinOnScreen(); // 闪现到起点
+        Toast.makeText(this, "Navigation Started!", Toast.LENGTH_SHORT).show();
+    }
+
+    private void updateUserPosition(float stepLength, float azimuth) {
+        if (!isNavigating) return;
+
+        // 获取当前楼层比例尺
+        float pixelsPerMeter = MapData.floorScales.getOrDefault(currentUserFloor, 12.04f);
+
+        float stepPixels = stepLength * pixelsPerMeter;
+        double finalAngle = azimuth + MAP_NORTH_OFFSET;
+
+        // 增量更新
+        currentUserX += (float) (stepPixels * Math.sin(finalAngle));
+        currentUserY += (float) -(stepPixels * Math.cos(finalAngle));
+
+        // 【核心吸附】强行咬合红线
+        PointF snapped = snapToNearestPath(currentUserX, currentUserY, currentUserFloor);
+        currentUserX = snapped.x;
+        currentUserY = snapped.y;
+
+        checkFloorSwitch();
+        checkArrival();
+
+        runOnUiThread(this::updatePinOnScreen);
+    }
+
+    private void updatePinOnScreen() {
+        if (currentDisplayFloor != currentUserFloor) {
+            imgLocationPin.setVisibility(View.GONE);
+            return;
+        }
+
+        PointF screenPos = mapImageToScreen(currentUserX, currentUserY);
+        float tx = screenPos.x - imgLocationPin.getWidth() / 2f;
+        float ty = screenPos.y - imgLocationPin.getHeight() / 2f;
+
+        if (imgLocationPin.getVisibility() != View.VISIBLE) {
+            imgLocationPin.setX(tx);
+            imgLocationPin.setY(ty);
+            imgLocationPin.setVisibility(View.VISIBLE);
+        } else {
+            imgLocationPin.animate().x(tx).y(ty).setDuration(200)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        }
+    }
+
+    private void switchFloor(int floor) {
+        currentDisplayFloor = floor;
+        int resId = (floor == 3) ? R.drawable.floor3 : (floor == 4 ? R.drawable.floor4 : R.drawable.floor5);
+        imgFloorMap.setImageResource(resId);
+
+        // 【性能优化】缓存地图原始像素尺寸，解决卡顿
+        android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        android.graphics.BitmapFactory.decodeResource(getResources(), resId, options);
+        mapRawWidth = options.outWidth;
+        mapRawHeight = options.outHeight;
+
+        btnFloor3.setAlpha(floor == 3 ? 1.0f : 0.5f);
+        btnFloor4.setAlpha(floor == 4 ? 1.0f : 0.5f);
+        btnFloor5.setAlpha(floor == 5 ? 1.0f : 0.5f);
+
+        drawPathForCurrentFloor();
+        updatePinOnScreen();
+    }
+
+    private PointF mapImageToScreen(float ox, float oy) {
+        // 使用缓存的 mapRawWidth/Height
+        if (imgFloorMap.getWidth() == 0 || mapRawWidth == 0) return new PointF(ox, oy);
+
+        float vw = imgFloorMap.getWidth();
+        float vh = imgFloorMap.getHeight();
+        float scale = Math.min(vw / mapRawWidth, vh / mapRawHeight);
+        float offX = (vw - mapRawWidth * scale) / 2f;
+        float offY = (vh - mapRawHeight * scale) / 2f;
+
+        return new PointF(ox * scale + offX, oy * scale + offY);
+    }
+
+    private PointF snapToNearestPath(float x, float y, int floor) {
+        if (currentWholePath == null || currentWholePath.size() < 2) return new PointF(x, y);
+
+        double minDistance = Double.MAX_VALUE;
+        PointF nearestPoint = new PointF(x, y);
+
+        for (int i = 0; i < currentWholePath.size() - 1; i++) {
+            MapData.Node nA = currentWholePath.get(i);
+            MapData.Node nB = currentWholePath.get(i + 1);
+
+            if (nA.floor != floor || nB.floor != floor) continue;
+
+            PointF p = getClosestPointOnSegment(nA.x, nA.y, nB.x, nB.y, x, y);
+            double dist = Math.sqrt(Math.pow(p.x - x, 2) + Math.pow(p.y - y, 2));
+
+            if (dist < minDistance) {
+                minDistance = dist;
+                nearestPoint = p;
+            }
+        }
+        // 如果离红线偏差在 200 像素内，则强制吸附
+        return (minDistance < 200) ? nearestPoint : new PointF(x, y);
+    }
+
+    private PointF getClosestPointOnSegment(float ax, float ay, float bx, float by, float px, float py) {
+        float dx = bx - ax, dy = by - ay;
+        if (dx == 0 && dy == 0) return new PointF(ax, ay);
+        float t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+        t = Math.max(0, Math.min(1, t));
+        return new PointF(ax + t * dx, ay + t * dy);
+    }
+
+    private void checkFloorSwitch() {
+        if (currentWholePath == null || currentWholePath.size() < 2) return;
+        float scale = MapData.floorScales.getOrDefault(currentUserFloor, 12.04f);
+        float threshold = 2.5f * scale; // 2.5米切换阈值
+
+        for (int i = 0; i < currentWholePath.size() - 1; i++) {
+            MapData.Node curr = currentWholePath.get(i);
+            MapData.Node next = currentWholePath.get(i + 1);
+            if (curr.floor == currentUserFloor && next.floor != currentUserFloor) {
+                if (calculateDistance(currentUserX, currentUserY, curr.x, curr.y) < threshold) {
+                    currentUserFloor = next.floor;
+                    currentUserX = next.x;
+                    currentUserY = next.y;
+                    int finalNext = next.floor;
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, "Switching to " + finalNext + "F", Toast.LENGTH_SHORT).show();
+                        switchFloor(finalNext);
+                    });
+                    break;
                 }
             }
         }
-        return pts;
     }
 
+    private void checkArrival() {
+        if (currentWholePath == null || currentWholePath.isEmpty()) return;
+        MapData.Node end = currentWholePath.get(currentWholePath.size() - 1);
+        float scale = MapData.floorScales.getOrDefault(currentUserFloor, 12.04f);
+        if (currentUserFloor == end.floor && calculateDistance(currentUserX, currentUserY, end.x, end.y) < 4.0 * scale) {
+            isNavigating = false;
+            pdrManager.stop();
+            runOnUiThread(() -> {
+                Toast.makeText(this, "Arrived at Destination!", Toast.LENGTH_LONG).show();
+                imgLocationPin.setVisibility(View.GONE);
+            });
+        }
+    }
 
+    private double calculateDistance(float x1, float y1, float x2, float y2) {
+        return Math.sqrt(Math.pow(x1 - x2, 2) + Math.pow(y1 - y2, 2));
+    }
 
+    private void drawPathForCurrentFloor() {
+        if (currentWholePath == null || currentWholePath.isEmpty()) return;
+        List<PointF> floorPoints = new ArrayList<>();
+        for (MapData.Node n : currentWholePath) {
+            if (n.floor == currentDisplayFloor) {
+                floorPoints.add(mapImageToScreen(n.x, n.y));
+            }
+        }
+        pathOverlay.setPathPoints(floorPoints.size() > 1 ? floorPoints : null);
+    }
 
+    // WiFi 纠偏与循环保持原有逻辑
+    private void startWifiScanLoop() {
+        if (isScanningLoopRunning) return;
+        isScanningLoopRunning = true;
+        registerReceiver(wifiScanReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+        wifiHandler.post(scanRunnable);
+    }
 
+    private void stopWifiScanLoop() {
+        isScanningLoopRunning = false;
+        wifiHandler.removeCallbacks(scanRunnable);
+        try { unregisterReceiver(wifiScanReceiver); } catch (Exception ignored) {}
+    }
 
+    private Runnable scanRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!isNavigating || !isScanningLoopRunning) return;
+            if (wifiManager != null && wifiManager.isWifiEnabled()) {
+                if (ActivityCompat.checkSelfPermission(NavigationActivity.this, Manifest.permission.ACCESS_FINE_LOCATION)
+                        == PackageManager.PERMISSION_GRANTED) wifiManager.startScan();
+            }
+            wifiHandler.postDelayed(this, SCAN_INTERVAL);
+        }
+    };
+
+    private String computeBestRoom(List<ScanResult> results) {
+        List<UserActivity.FingerprintRecord> library = UserActivity.fingerprintLibrary;
+        if (library == null || library.isEmpty()) return null;
+        Map<String, Double> cur = new HashMap<>();
+        for (ScanResult r : results) if (r.level > -85) cur.put(r.BSSID, (double) r.level);
+        if (cur.size() < 4) return null;
+
+        String best = null; double minDist = Double.MAX_VALUE;
+        for (UserActivity.FingerprintRecord rec : library) {
+            double d = 0; int matches = 0;
+            for (String b : cur.keySet()) {
+                if (rec.avgRssiMap.containsKey(b)) {
+                    d += Math.pow(cur.get(b) - rec.avgRssiMap.get(b), 2);
+                    matches++;
+                }
+            }
+            if (matches >= 4) {
+                d = Math.sqrt(d);
+                if (d < minDist) { minDist = d; best = rec.room; }
+            }
+        }
+        return (minDist < 25.0) ? best : null;
+    }
+
+    private void correctPositionByWifi(String roomId) {
+        if (roomId == null || !isNavigating) return;
+        String doorId = "door_" + roomId.toLowerCase();
+
+        if (MapData.nodes.containsKey(doorId)) {
+            MapData.Node door = MapData.nodes.get(doorId);
+            if (door.floor == currentUserFloor) {
+                // 1. 计算当前位置与 WiFi 检测位置的距离
+                double dist = calculateDistance(currentUserX, currentUserY, door.x, door.y);
+
+                // 2. 获取比例尺 (你定义的 12.04f)
+                float scale = MapData.floorScales.getOrDefault(currentUserFloor, 12.04f);
+
+                // 3. 【解决灵敏问题】
+                // 如果偏差小于 5 米 (5 * 12.04 px)，就不纠偏，让 PDR 保持稳定
+                // 如果偏差在 5-15 米之间，说明 PDR 飘了，执行拉回
+                // 如果偏差大于 15 米，可能是 WiFi 飘了，忽略
+                double distInMeters = dist / scale;
+                if (distInMeters > 5.0 && distInMeters < 15.0) {
+                    PointF snapped = snapToNearestPath(door.x, door.y, currentUserFloor);
+                    currentUserX = snapped.x;
+                    currentUserY = snapped.y;
+                    runOnUiThread(this::updatePinOnScreen);
+                    Log.d("WiFi", "Applied correction for: " + roomId);
+                }
+            }
+        }
+    }
+
+    private void generateNavigationText(List<MapData.Node> path) {
+        StringBuilder sb = new StringBuilder("Path: ");
+        for (int i = 0; i < path.size(); i++) {
+            sb.append(path.get(i).id).append(i == path.size() - 1 ? "" : " -> ");
+        }
+        tvInfo.setText(sb.toString());
+    }
+
+    private void checkSensorPermission() {
+        List<String> needed = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        if (!needed.isEmpty()) ActivityCompat.requestPermissions(this, needed.toArray(new String[0]), 100);
+    }
+
+    @Override
+    protected void onResume() { super.onResume(); if (isNavigating) { pdrManager.start(); startWifiScanLoop(); } }
+    @Override
+    protected void onPause() { super.onPause(); pdrManager.stop(); stopWifiScanLoop(); }
 }
