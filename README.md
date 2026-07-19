@@ -1,7 +1,7 @@
 # Indoor Wi-Fi Navigation
 
 [![Android](https://img.shields.io/badge/Android-API%2024%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](https://developer.android.com/)
-[![Validation](https://img.shields.io/github/actions/workflow/status/LinkisLethe/indoor-wifi-navigation/validate.yml?branch=master&style=flat-square&label=validation)](https://github.com/LinkisLethe/indoor-wifi-navigation/actions/workflows/validate.yml)
+[![Validation](https://img.shields.io/github/actions/workflow/status/LinkisLethe/BNBU_IndoorNavigation/validate.yml?branch=master&style=flat-square&label=validation)](https://github.com/LinkisLethe/BNBU_IndoorNavigation/actions/workflows/validate.yml)
 [![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
 
 [中文说明](README.zh-CN.md)
